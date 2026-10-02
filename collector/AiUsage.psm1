@@ -14,6 +14,7 @@ function ConvertTo-IsoUtc($Value) {
 
 function Get-Prop($Object, [string]$Name) {
     if ($null -eq $Object) { return $null }
+    if ($Object -is [System.Collections.IDictionary]) { if ($Object.Contains($Name)) { return $Object[$Name] } else { return $null } }
     $p = $Object.PSObject.Properties[$Name]
     if ($p) { $p.Value } else { $null }
 }
@@ -128,7 +129,113 @@ function Get-CodexCredential {
     @{ accessToken = $tok; accountId = (Get-Prop $t 'account_id') }
 }
 
+# ---------- workload identity federation (pure parts) ----------
+# The laptop acts as its own OIDC issuer: it signs a short-lived JWT with a private key that
+# never leaves the TPM, and trades it for a short-lived Claude platform token.
+
+function ConvertTo-Base64Url([byte[]]$Bytes) {
+    [Convert]::ToBase64String($Bytes).TrimEnd('=').Replace('+', '-').Replace('/', '_')
+}
+
+function ConvertTo-Jwk {
+    param([System.Security.Cryptography.RSA]$Rsa)
+    $p = $Rsa.ExportParameters($false)   # public half only
+    $n = ConvertTo-Base64Url $p.Modulus
+    $e = ConvertTo-Base64Url $p.Exponent
+    # kid = RFC 7638 thumbprint (members in lexical order, no whitespace)
+    $canon = '{"e":"' + $e + '","kty":"RSA","n":"' + $n + '"}'
+    $kid = ConvertTo-Base64Url ([System.Security.Cryptography.SHA256]::HashData([Text.Encoding]::UTF8.GetBytes($canon)))
+    [ordered]@{ kty = 'RSA'; n = $n; e = $e; alg = 'RS256'; use = 'sig'; kid = $kid }
+}
+
+function New-WifAssertion {
+    param($Wif, [System.Security.Cryptography.RSA]$Rsa, [datetimeoffset]$Now, [int]$LifetimeSeconds = 120)
+    $t = $Now.ToUnixTimeSeconds()
+    $header = [ordered]@{ alg = 'RS256'; typ = 'JWT'; kid = (ConvertTo-Jwk -Rsa $Rsa).kid }
+    $claims = [ordered]@{
+        iss = Get-Prop $Wif 'issuer'; sub = Get-Prop $Wif 'subject'; aud = Get-Prop $Wif 'audience'
+        iat = $t - 10; exp = $t + $LifetimeSeconds; jti = [guid]::NewGuid().ToString('N')   # jti makes each assertion single-use
+    }
+    $enc = { param($o) ConvertTo-Base64Url ([Text.Encoding]::UTF8.GetBytes(($o | ConvertTo-Json -Compress))) }
+    $signing = (& $enc $header) + '.' + (& $enc $claims)
+    $sig = $Rsa.SignData([Text.Encoding]::ASCII.GetBytes($signing), [System.Security.Cryptography.HashAlgorithmName]::SHA256,
+        [System.Security.Cryptography.RSASignaturePadding]::Pkcs1)
+    $signing + '.' + (ConvertTo-Base64Url $sig)
+}
+
+function New-WifTokenRequest {
+    param($Wif, [string]$Assertion)
+    $body = [ordered]@{
+        grant_type         = 'urn:ietf:params:oauth:grant-type:jwt-bearer'
+        assertion          = $Assertion
+        federation_rule_id = Get-Prop $Wif 'ruleId'
+        organization_id    = Get-Prop $Wif 'organizationId'
+        service_account_id = Get-Prop $Wif 'serviceAccountId'
+    }
+    if (Get-Prop $Wif 'workspaceId') { $body.workspace_id = Get-Prop $Wif 'workspaceId' }
+    $body
+}
+
+function Select-PlatformAuth {
+    # 'wif' when federation is fully configured, else 'key' when an API key is stored, else nothing.
+    param($Config, [string]$AdminKey)
+    $wif = Get-Prop $Config 'wif'
+    if ((Get-Prop $wif 'ruleId') -and (Get-Prop $wif 'organizationId') -and (Get-Prop $wif 'serviceAccountId')) { return 'wif' }
+    if ($AdminKey) { return 'key' }
+    $null
+}
+
 # ---------- I/O (thin wrappers) ----------
+
+function Get-WifKey {
+    # Opens (or with -Create, makes) a 2048-bit RSA signing key held by the TPM. The private key
+    # cannot be exported, by this user or anyone else; only this Windows user can ask it to sign.
+    param([string]$Name = 'ai-usage-wif', [switch]$Create)
+    if (-not $IsWindows) { throw 'The TPM-backed signing key is only supported on Windows.' }
+    $provider = [System.Security.Cryptography.CngProvider]::new('Microsoft Platform Crypto Provider')
+    if ([System.Security.Cryptography.CngKey]::Exists($Name, $provider)) {
+        $key = [System.Security.Cryptography.CngKey]::Open($Name, $provider)
+    }
+    elseif ($Create) {
+        $p = [System.Security.Cryptography.CngKeyCreationParameters]::new()
+        $p.Provider = $provider
+        $p.KeyUsage = [System.Security.Cryptography.CngKeyUsages]::Signing
+        $p.ExportPolicy = [System.Security.Cryptography.CngExportPolicies]::None
+        $p.Parameters.Add([System.Security.Cryptography.CngProperty]::new('Length', [BitConverter]::GetBytes(2048),
+                [System.Security.Cryptography.CngPropertyOptions]::None))
+        try { $key = [System.Security.Cryptography.CngKey]::Create([System.Security.Cryptography.CngAlgorithm]::Rsa, $Name, $p) }
+        catch { throw "Could not create a key in the TPM (is the TPM present and enabled?): $($_.Exception.Message)" }
+    }
+    else { throw "Signing key '$Name' not found. Run Install.ps1 -SetupWif." }
+    [System.Security.Cryptography.RSACng]::new($key)
+}
+
+function Get-WifToken($Wif, [datetimeoffset]$Now) {
+    $name = Get-Prop $Wif 'keyName'
+    $rsa = if ($name) { Get-WifKey -Name $name } else { Get-WifKey }
+    try { $assertion = New-WifAssertion -Wif $Wif -Rsa $rsa -Now $Now } finally { $rsa.Dispose() }
+    $body = New-WifTokenRequest -Wif $Wif -Assertion $assertion | ConvertTo-Json -Compress
+    try {
+        # Same request the official SDK sends for a jwt-bearer exchange.
+        $r = Invoke-RestMethod -Method Post -Uri 'https://api.anthropic.com/v1/oauth/token' -ContentType 'application/json' `
+            -Body $body -TimeoutSec 30 -Headers @{ 'anthropic-beta' = 'oauth-2025-04-20,oidc-federation-2026-04-01' }
+    }
+    catch {
+        $code = try { [int]$_.Exception.Response.StatusCode } catch { 0 }
+        if ($code -eq 401) { throw 'Federation was refused (401). Check the rule (issuer, subject, audience, service account) and the events on the Console Workload identity page.' }
+        throw "Token exchange failed: $($_.Exception.Message)"
+    }
+    $r.access_token
+}
+
+function Get-PlatformHeaders($Config, [string]$ConfigDir, [datetimeoffset]$Now) {
+    $key = Read-AdminKey -ConfigDir $ConfigDir
+    switch (Select-PlatformAuth -Config $Config -AdminKey $key) {
+        'wif' { @{ Authorization = "Bearer $(Get-WifToken (Get-Prop $Config 'wif') $Now)"; 'anthropic-beta' = 'oauth-2025-04-20'; 'anthropic-version' = '2023-06-01' } }
+        'key' { @{ 'x-api-key' = $key; 'anthropic-version' = '2023-06-01' } }
+        default { throw 'Claude platform access is not set up. Run Install.ps1 -SetupWif (or -SetAdminKey).' }
+    }
+}
 
 # The admin key is kept as a SecureString exported with Export-Clixml. On Windows that is
 # DPAPI encryption bound to the current Windows user on this machine.
@@ -176,25 +283,24 @@ function Get-CodexSource([datetimeoffset]$Now) {
     ConvertTo-CodexSource -Response $resp -Now $Now
 }
 
-function Get-ReportPages([string]$Url, [string]$AdminKey) {
+function Get-ReportPages([string]$Url, $Headers) {
     $page = $null
     for ($i = 0; $i -lt 10; $i++) {
         $u = if ($page) { "$Url&page=$page" } else { $Url }
-        $r = Invoke-RestMethod -Uri $u -TimeoutSec 30 -Headers @{ 'x-api-key' = $AdminKey; 'anthropic-version' = '2023-06-01' }
+        $r = Invoke-RestMethod -Uri $u -TimeoutSec 30 -Headers $Headers
         $r
         if (-not (Get-Prop $r 'has_more')) { break }
         $page = $r.next_page
     }
 }
 
-function Get-PlatformSource([datetimeoffset]$Now, [string]$AdminKey, [int]$Days) {
-    if (-not $AdminKey) { throw 'No admin key stored. Run Install.ps1 -SetAdminKey.' }
+function Get-PlatformSource([datetimeoffset]$Now, $Headers, [int]$Days) {
     $end = $Now.UtcDateTime.Date.AddDays(1).ToString('yyyy-MM-ddT00:00:00Z')
     $start = $Now.UtcDateTime.Date.AddDays(1 - $Days).ToString('yyyy-MM-ddT00:00:00Z')
     $base = 'https://api.anthropic.com/v1/organizations'
     $q = "starting_at=$start&ending_at=$end&bucket_width=1d&limit=31"
-    $usage = @(Get-ReportPages "$base/usage_report/messages?$q&group_by[]=model" $AdminKey)
-    $cost = @(Get-ReportPages "$base/cost_report?$q&group_by[]=description" $AdminKey)
+    $usage = @(Get-ReportPages "$base/usage_report/messages?$q&group_by[]=model" $Headers)
+    $cost = @(Get-ReportPages "$base/cost_report?$q&group_by[]=description" $Headers)
     ConvertTo-PlatformSource -UsagePages $usage -CostPages $cost -Now $Now
 }
 
@@ -218,7 +324,7 @@ function Invoke-AiUsageCollect {
     $fetchers = [ordered]@{
         claude   = { Get-ClaudeSource $now }
         codex    = { Get-CodexSource $now }
-        platform = { Get-PlatformSource $now (Read-AdminKey -ConfigDir $ConfigDir) $days }
+        platform = { Get-PlatformSource $now (Get-PlatformHeaders $config $ConfigDir $now) $days }
     }
     $sources = [ordered]@{}
     foreach ($name in $fetchers.Keys) {
@@ -231,4 +337,4 @@ function Invoke-AiUsageCollect {
     $json
 }
 
-Export-ModuleMember -Function ConvertTo-*, Merge-Source, Select-ClaudeCredential, Get-CodexCredential, Save-AdminKey, Read-AdminKey, Invoke-AiUsageCollect
+Export-ModuleMember -Function ConvertTo-*, New-Wif*, Select-PlatformAuth, Get-WifKey, Merge-Source, Select-ClaudeCredential, Get-CodexCredential, Save-AdminKey, Read-AdminKey, Invoke-AiUsageCollect

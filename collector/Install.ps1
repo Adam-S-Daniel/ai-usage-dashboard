@@ -3,7 +3,8 @@
 # One-time setup on Windows: creates the secret gist + config, registers a
 # scheduled task that runs Collect.ps1 every N minutes, and prints the dashboard URL.
 param(
-    [switch]$SetAdminKey,                   # prompt for the Claude platform admin key and store it encrypted
+    [switch]$SetupWif,                      # keyless Claude platform access: TPM signing key + Workload Identity Federation
+    [switch]$SetAdminKey,                   # fallback: prompt for a Claude platform admin key and store it encrypted
     [int]$EveryMinutes = 5,
     [string]$PagesUrl,
     [string]$ConfigDir = (Join-Path $HOME '.config/ai-usage')
@@ -38,7 +39,49 @@ if ($SetAdminKey) {
     $key = Read-Host 'Claude platform admin key (input hidden)' -AsSecureString
     if ($key.Length -gt 0) { Save-AdminKey -ConfigDir $ConfigDir -Key $key }
 }
-$config | ConvertTo-Json | Set-Content $configPath -Encoding utf8
+if ($SetupWif) {
+    $wif = if ($config.wif) { $config.wif } else { @{} }
+    if (-not $wif.keyName) { $wif.keyName = 'ai-usage-wif' }
+    if (-not $wif.issuer) { $wif.issuer = "https://$([Environment]::MachineName.ToLower()).ai-usage.internal" }
+    if (-not $wif.subject) { $wif.subject = 'ai-usage-collector' }
+    if (-not $wif.audience) { $wif.audience = 'https://api.anthropic.com' }
+    $rsa = Get-WifKey -Name $wif.keyName -Create
+    $jwk = ConvertTo-Jwk -Rsa $rsa | ConvertTo-Json -Compress
+    $rsa.Dispose()
+    @"
+
+Signing key '$($wif.keyName)' is in the TPM. Nothing below is secret.
+In the Claude Console: Settings > Workload identity > Connect workload (field names may differ slightly).
+
+  Issuer
+    Issuer URL      $($wif.issuer)
+    Keys (JWKS)     inline, paste one of:
+                      key only:  $jwk
+                      full JWKS: {"keys":[$jwk]}
+  Rule
+    Subject         $($wif.subject)      (exact match)
+    Audience        $($wif.audience)
+    Service account local-admin-scripts  (its organization role must be admin)
+    OAuth scope     org:admin            (under Advanced rule options)
+    Token lifetime  300 seconds or less
+
+Then paste the IDs here (Enter keeps the current value; you can rerun -SetupWif later).
+"@
+    foreach ($f in @(
+            @{ k = 'ruleId'; q = 'Federation rule ID (fdrl_...)' }
+            @{ k = 'organizationId'; q = 'Organization ID (UUID, Console > Settings > Organization)' }
+            @{ k = 'serviceAccountId'; q = 'Service account ID (svac_...)' }
+            @{ k = 'workspaceId'; q = 'Workspace ID (wrkspc_..., only if the rule covers more than one workspace)' })) {
+        $cur = if ($wif[$f.k]) { " [$($wif[$f.k])]" } else { '' }
+        $v = (Read-Host "$($f.q)$cur").Trim()
+        if ($v) { $wif[$f.k] = $v }
+    }
+    $config.wif = $wif
+    if (Test-Path (Join-Path $ConfigDir 'adminkey.xml')) {
+        'Note: a stored admin key (adminkey.xml) still exists. Federation takes priority; once it works, delete that file and revoke the key.'
+    }
+}
+$config | ConvertTo-Json -Depth 5 | Set-Content $configPath -Encoding utf8
 
 # Publish the page: create the public repo on first run (code only, no usage data), then turn on GitHub Pages.
 $root = Split-Path $PSScriptRoot
