@@ -40,23 +40,32 @@ function ConvertTo-ClaudeSource {
     [ordered]@{ ok = $true; fetched_at = ConvertTo-IsoUtc $Now; plan = $Plan; windows = @($windows) }
 }
 
+function Get-WindowLabel([long]$Seconds) {
+    if ($Seconds -eq 18000) { return 'Session (5 h)' }
+    if ($Seconds -eq 604800) { return 'Week' }
+    if ($Seconds % 86400 -eq 0) { return "$($Seconds / 86400)-day window" }
+    "$([math]::Round($Seconds / 3600))-hour window"
+}
+
 function ConvertTo-CodexSource {
     param($Response, [datetimeoffset]$Now)
     $rl = Get-Prop $Response 'rate_limit'
     $defs = @(
-        @{ id = 'primary_window'; label = 'Session (5 h)'; period = 18000 }
-        @{ id = 'secondary_window'; label = 'Week'; period = 604800 }
+        @{ id = 'primary_window'; period = 18000 }
+        @{ id = 'secondary_window'; period = 604800 }
     )
     $windows = foreach ($d in $defs) {
         $w = Get-Prop $rl $d.id
         if ($null -eq $w) { continue }
         $u = Get-Prop $w 'used_percent'
         if ($null -eq $u) { continue }
+        # The plan decides how long each window is (some plans only have a weekly one),
+        # so the label comes from the reported length, not from primary/secondary.
         $period = Get-Prop $w 'limit_window_seconds'
+        $period = if ($period) { [int]$period } else { $d.period }
         [ordered]@{
-            id = $d.id; label = $d.label; used_pct = [double]$u
-            resets_at = ConvertTo-IsoUtc (Get-Prop $w 'reset_at')
-            period_seconds = if ($period) { [int]$period } else { $d.period }
+            id = $d.id; label = Get-WindowLabel $period; used_pct = [double]$u
+            resets_at = ConvertTo-IsoUtc (Get-Prop $w 'reset_at'); period_seconds = $period
         }
     }
     [ordered]@{ ok = $true; fetched_at = ConvertTo-IsoUtc $Now; plan = (Get-Prop $Response 'plan_type'); windows = @($windows) }
@@ -337,4 +346,4 @@ function Invoke-AiUsageCollect {
     $json
 }
 
-Export-ModuleMember -Function ConvertTo-*, New-Wif*, Select-PlatformAuth, Get-WifKey, Merge-Source, Select-ClaudeCredential, Get-CodexCredential, Save-AdminKey, Read-AdminKey, Invoke-AiUsageCollect
+Export-ModuleMember -Function ConvertTo-*, Get-WindowLabel, New-Wif*, Select-PlatformAuth, Get-WifKey, Merge-Source, Select-ClaudeCredential, Get-CodexCredential, Save-AdminKey, Read-AdminKey, Invoke-AiUsageCollect

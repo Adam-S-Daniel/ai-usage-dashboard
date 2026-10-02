@@ -186,3 +186,18 @@ Describe 'Workload identity federation' {
         Select-PlatformAuth -Config ('{}' | ConvertFrom-Json) -AdminKey $null | Should -Be $null
     }
 }
+
+Describe 'Codex window labels' {
+    It 'labels each window by its real length, not its position' {
+        $resp = '{"plan_type":"prolite","rate_limit":{"primary_window":{"used_percent":50,"reset_at":1791331200,"limit_window_seconds":604800}}}' | ConvertFrom-Json
+        $s = ConvertTo-CodexSource -Response $resp -Now $script:Now
+        $s.windows[0].label | Should -Be 'Week'
+        $s.windows[0].period_seconds | Should -Be 604800
+    }
+    It 'names 5-hour, multi-day and odd-length windows' {
+        Get-WindowLabel 18000 | Should -Be 'Session (5 h)'
+        Get-WindowLabel 604800 | Should -Be 'Week'
+        Get-WindowLabel 2592000 | Should -Be '30-day window'
+        Get-WindowLabel 10800 | Should -Be '3-hour window'
+    }
+}
