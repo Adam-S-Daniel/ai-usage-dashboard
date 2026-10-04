@@ -201,3 +201,48 @@ Describe 'Codex window labels' {
         Get-WindowLabel 10800 | Should -Be '3-hour window'
     }
 }
+
+Describe 'Usage encryption' {
+    BeforeAll {
+        $script:Key = New-UsageKey
+        $script:Doc = '{"schema":1,"host":"example-host","note":"caf\u00e9 ✓"}'
+    }
+    It 'makes a 32-byte base64url key without padding' {
+        $script:Key.Length | Should -Be 43
+        (ConvertFrom-Base64Url $script:Key).Length | Should -Be 32
+        ($script:Key -match '^[A-Za-z0-9_-]{43}$') | Should -Be $true
+    }
+    It 'round-trips the exact JSON, including non-ASCII' {
+        Unprotect-UsageJson -Envelope (Protect-UsageJson -Json $script:Doc -Key $script:Key) -Key $script:Key | Should -Be $script:Doc
+    }
+    It 'uses a fresh IV, so two encryptions of the same input differ' {
+        $a = Protect-UsageJson -Json $script:Doc -Key $script:Key
+        $b = Protect-UsageJson -Json $script:Doc -Key $script:Key
+        ($a -eq $b) | Should -Be $false
+        ((ConvertFrom-Json $a).iv -eq (ConvertFrom-Json $b).iv) | Should -Be $false
+    }
+    It 'has exactly v, enc, iv and ct, with a 12-byte IV and a 16-byte tag after the ciphertext' {
+        $e = Protect-UsageJson -Json $script:Doc -Key $script:Key | ConvertFrom-Json
+        ($e.PSObject.Properties.Name -join ',') | Should -Be 'v,enc,iv,ct'
+        $e.v | Should -Be 1
+        $e.enc | Should -Be 'A256GCM'
+        (ConvertFrom-Base64Url $e.iv).Length | Should -Be 12
+        (ConvertFrom-Base64Url $e.ct).Length | Should -Be ([Text.Encoding]::UTF8.GetByteCount($script:Doc) + 16)
+    }
+    It 'throws on a tampered ciphertext, a tampered tag, or the wrong key' {
+        $e = Protect-UsageJson -Json $script:Doc -Key $script:Key | ConvertFrom-Json
+        $threw = @()
+        foreach ($at in 0, -1) {
+            $b = ConvertFrom-Base64Url $e.ct
+            $b[$(if ($at -lt 0) { $b.Length - 1 } else { 0 })] = $b[$(if ($at -lt 0) { $b.Length - 1 } else { 0 })] -bxor 1
+            $bad = [ordered]@{ v = 1; enc = 'A256GCM'; iv = $e.iv; ct = ConvertTo-Base64Url $b } | ConvertTo-Json -Compress
+            $threw += try { Unprotect-UsageJson -Envelope $bad -Key $script:Key; $false } catch { $true }
+        }
+        $threw += try { Unprotect-UsageJson -Envelope ($e | ConvertTo-Json -Compress) -Key (New-UsageKey); $false } catch { $true }
+        ($threw -join ',') | Should -Be 'True,True,True'
+    }
+    It 'rejects a key that is not 32 bytes' {
+        $threw = try { Protect-UsageJson -Json $script:Doc -Key 'c2hvcnQ'; $false } catch { $true }
+        $threw | Should -Be $true
+    }
+}

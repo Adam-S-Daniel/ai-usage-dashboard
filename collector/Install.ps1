@@ -4,6 +4,7 @@
 # scheduled task that runs Collect.ps1 every N minutes, and prints the dashboard URL.
 param(
     [switch]$SetupWif,                      # keyless Claude platform access: TPM signing key + Workload Identity Federation
+    [switch]$Rotate,                        # new secret gist + new key, then delete the old gist (and its history)
     [switch]$SetAdminKey,                   # fallback: prompt for a Claude platform admin key and store it encrypted
     [int]$EveryMinutes = 5,
     [string]$PagesUrl,
@@ -20,6 +21,8 @@ New-Item -ItemType Directory -Force $ConfigDir | Out-Null
 $configPath = Join-Path $ConfigDir 'config.json'
 $config = if (Test-Path $configPath) { Get-Content -Raw $configPath | ConvertFrom-Json -AsHashtable } else { @{} }
 
+$oldGist = $null; $gistExisted = [bool]$config.gistId
+if ($Rotate -and $config.gistId) { $oldGist = $config.gistId; $config.Remove('gistId'); $config.Remove('key'); $gistExisted = $false }
 if (-not $config.gistId) {
     $seed = Join-Path ([IO.Path]::GetTempPath()) 'usage.json'
     '{}' | Set-Content $seed
@@ -28,6 +31,10 @@ if (-not $config.gistId) {
     $config.gistId = ($url | Select-Object -Last 1).Trim().Split('/')[-1]
 }
 Import-Module (Join-Path $PSScriptRoot 'AiUsage.psm1') -Force
+if (-not $config.key) {
+    $config.key = New-UsageKey
+    if ($gistExisted) { 'The existing gist''s revision history is still unencrypted. Run Install.ps1 -Rotate to replace it.' }
+}
 # The key is typed at a hidden prompt (never a command-line argument, so it stays out of shell
 # history) and stored DPAPI-encrypted for this Windows user. A plain-text key left in
 # config.json by an earlier version is moved into the encrypted file.
@@ -107,11 +114,19 @@ $settings = New-ScheduledTaskSettingsSet -StartWhenAvailable -AllowStartIfOnBatt
     -ExecutionTimeLimit (New-TimeSpan -Minutes 3) -MultipleInstances IgnoreNew
 Register-ScheduledTask -TaskName $taskName -Action $action -Trigger $trigger -Settings $settings -Force | Out-Null
 
+$global:LASTEXITCODE = 0   # the Pages call above may have left a failure code
 & $collect -ConfigDir $ConfigDir
+if ($oldGist) {
+    # Delete only after the new gist took its first publish.
+    if ($LASTEXITCODE -ne 0) { throw "The first publish to the new gist failed (see $(Join-Path $ConfigDir 'error.log')); the old gist $oldGist was kept." }
+    gh gist delete $oldGist --yes
+    if ($LASTEXITCODE -ne 0) { throw "Could not delete the old gist $oldGist; delete it by hand." }
+    "Deleted the old gist $oldGist and its history."
+}
 Get-Content -Raw (Join-Path $ConfigDir 'usage.json') | ConvertFrom-Json | ForEach-Object {
     foreach ($s in $_.sources.PSObject.Properties) {
         '{0,-9} {1}' -f $s.Name, ($s.Value.ok ? 'ok' : "not ready: $($s.Value.error)")
     }
 }
 "`nScheduled task '$taskName' runs every $EveryMinutes min."
-"Dashboard: $PagesUrl#$($config.gistId)"
+"Dashboard: $PagesUrl#$($config.gistId)" + $(if ($config.key) { ".$($config.key)" })

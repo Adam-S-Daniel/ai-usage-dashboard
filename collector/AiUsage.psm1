@@ -146,6 +146,11 @@ function ConvertTo-Base64Url([byte[]]$Bytes) {
     [Convert]::ToBase64String($Bytes).TrimEnd('=').Replace('+', '-').Replace('/', '_')
 }
 
+function ConvertFrom-Base64Url([string]$Text) {
+    $b = $Text.Replace('-', '+').Replace('_', '/')
+    [Convert]::FromBase64String($b.PadRight($b.Length + (4 - $b.Length % 4) % 4, '='))
+}
+
 function ConvertTo-Jwk {
     param([System.Security.Cryptography.RSA]$Rsa)
     $p = $Rsa.ExportParameters($false)   # public half only
@@ -192,6 +197,47 @@ function Select-PlatformAuth {
     if ((Get-Prop $wif 'ruleId') -and (Get-Prop $wif 'organizationId') -and (Get-Prop $wif 'serviceAccountId')) { return 'wif' }
     if ($AdminKey) { return 'key' }
     $null
+}
+
+# ---------- gist encryption (pure) ----------
+# The gist is readable by anyone with its id, and every revision stays public, so the document is
+# AES-256-GCM encrypted. The key travels only in the dashboard link's #fragment, which no server sees.
+
+function New-UsageKey { ConvertTo-Base64Url ([System.Security.Cryptography.RandomNumberGenerator]::GetBytes(32)) }
+
+function Get-UsageKeyBytes([string]$Key) {
+    $k = try { ConvertFrom-Base64Url $Key } catch { $null }
+    if ($null -eq $k -or $k.Length -ne 32) { throw 'The usage key must be 32 bytes, base64url.' }
+    , $k
+}
+
+function Protect-UsageJson {
+    param([string]$Json, [string]$Key)
+    $kb = Get-UsageKeyBytes $Key
+    $iv = [System.Security.Cryptography.RandomNumberGenerator]::GetBytes(12)   # fresh per publish
+    $plain = [Text.Encoding]::UTF8.GetBytes($Json)
+    $ct = [byte[]]::new($plain.Length); $tag = [byte[]]::new(16)
+    $aes = [System.Security.Cryptography.AesGcm]::new($kb, 16)
+    try { $aes.Encrypt($iv, $plain, $ct, $tag) } finally { $aes.Dispose() }
+    [ordered]@{ v = 1; enc = 'A256GCM'; iv = ConvertTo-Base64Url $iv; ct = ConvertTo-Base64Url ([byte[]]($ct + $tag)) } | ConvertTo-Json -Compress
+}
+
+function Unprotect-UsageJson {
+    # Throws on a wrong key or any tampering (bad tag).
+    param([string]$Envelope, [string]$Key)
+    $kb = Get-UsageKeyBytes $Key
+    $e = ConvertFrom-Json $Envelope
+    if ((Get-Prop $e 'v') -ne 1 -or (Get-Prop $e 'enc') -ne 'A256GCM') { throw 'Not a usage envelope.' }
+    $iv = ConvertFrom-Base64Url $e.iv
+    $all = ConvertFrom-Base64Url $e.ct
+    if ($iv.Length -ne 12 -or $all.Length -lt 16) { throw 'Malformed usage envelope.' }
+    $n = $all.Length - 16
+    $ct = [byte[]]$all[0..($n - 1)]; $tag = [byte[]]$all[$n..($all.Length - 1)]
+    if ($n -eq 0) { $ct = [byte[]]::new(0) }
+    $plain = [byte[]]::new($n)
+    $aes = [System.Security.Cryptography.AesGcm]::new($kb, 16)
+    try { $aes.Decrypt($iv, $ct, $tag, $plain) } finally { $aes.Dispose() }
+    [Text.Encoding]::UTF8.GetString($plain)
 }
 
 # ---------- I/O (thin wrappers) ----------
@@ -342,8 +388,10 @@ function Invoke-AiUsageCollect {
     }
     $json = [ordered]@{ schema = 1; generated_at = ConvertTo-IsoUtc $now; host = [Environment]::MachineName; sources = $sources } | ConvertTo-Json -Depth 8
     Set-Content -LiteralPath $statePath -Value $json -Encoding utf8
-    if (-not $NoPublish) { Publish-Gist -GistId $config.gistId -Json $json }
+    # Encrypted when the install has a key; an older install keeps publishing plaintext until Install.ps1 reruns.
+    $key = Get-Prop $config 'key'
+    if (-not $NoPublish) { Publish-Gist -GistId $config.gistId -Json $(if ($key) { Protect-UsageJson -Json $json -Key $key } else { $json }) }
     $json
 }
 
-Export-ModuleMember -Function ConvertTo-*, Get-WindowLabel, New-Wif*, Select-PlatformAuth, Get-WifKey, Merge-Source, Select-ClaudeCredential, Get-CodexCredential, Save-AdminKey, Read-AdminKey, Invoke-AiUsageCollect
+Export-ModuleMember -Function ConvertTo-*, ConvertFrom-Base64Url, New-UsageKey, Protect-UsageJson, Unprotect-UsageJson, Get-WindowLabel, New-Wif*, Select-PlatformAuth, Get-WifKey, Merge-Source, Select-ClaudeCredential, Get-CodexCredential, Save-AdminKey, Read-AdminKey, Invoke-AiUsageCollect

@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'sha256-2hynPM33LvqKs5ZYYI6MDL5Qne7EpaphbGPgfLEv5sk='; connect-src https://api.github.com https://gist.githubusercontent.com; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'sha256-LY5W9vbDIjMuytQldQ2RE65Gqbj/9XOs3RUczFFY1T8='; connect-src https://api.github.com https://gist.githubusercontent.com; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'">
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-title" content="AI Usage">
@@ -70,7 +70,7 @@ const esc = (s) => String(s ?? "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<
 const fmtTok = (n) => n >= 1e9 ? (n / 1e9).toFixed(2) + "B" : n >= 1e6 ? (n / 1e6).toFixed(1) + "M" : n >= 1e3 ? (n / 1e3).toFixed(1) + "k" : String(n);
 const fmtUsd = (n) => "$" + n.toFixed(2);
 const STALE_MIN = 12;
-let data = null, err = null, choice = null; // choice: fragment id awaiting the user's decision
+let data = null, err = null, choice = null; // choice: fragment (id or id.key) awaiting the user's decision
 
 function dur(ms) {
   const m = Math.max(0, Math.round(ms / 60000));
@@ -170,12 +170,12 @@ function render() {
   const app = $("#app"), now = Date.now();
   if (!gistId() && !isDemo()) {
     $("#updated").textContent = "Not set up";
-    app.innerHTML = `<section class="card"><h2>Setup</h2><p class="sub">Run <code>collector/Install.ps1</code> on your laptop, then open the link it prints (this page with <code>#&lt;gist id&gt;</code> at the end). The id is remembered on this device. Add <code>#demo</code> to preview with sample data.</p></section>`;
+    app.innerHTML = `<section class="card"><h2>Setup</h2><p class="sub">Run <code>collector/Install.ps1</code> on your laptop, then open the link it prints (this page with <code>#&lt;gist id&gt;.&lt;key&gt;</code> at the end). The id and key are remembered on this device. Add <code>#demo</code> to preview with sample data.</p></section>`;
     return;
   }
   if (choice) {
     $("#updated").textContent = "Choose a data source";
-    app.innerHTML = `<section class="card banner"><h2>Different data source</h2><p class="sub">This link points at a different data source (<code>${esc(choice)}</code>) than the one saved on this device (<code>${esc(saved())}</code>). Only use the new link if you trust where it came from.</p><div class="row"><button id="keep">Keep the saved one</button><button id="adopt">Use the new link</button></div></section>`;
+    app.innerHTML = `<section class="card banner"><h2>Different data source</h2><p class="sub">This link points at a different data source (<code>${esc(idOf(choice))}</code>) than the one saved on this device (<code>${esc(idOf(saved()))}</code>). Only use the new link if you trust where it came from.</p><div class="row"><button id="keep">Keep the saved one</button><button id="adopt">Use the new link</button></div></section>`;
     $("#adopt").addEventListener("click", () => load(choice));
     $("#keep").addEventListener("click", () => { history.replaceState(null, "", location.pathname + location.search); load(); });
     return;
@@ -199,9 +199,32 @@ document.addEventListener("click", (e) => {
 });
 
 const isDemo = () => location.hash === "#demo";
-const fragId = () => { const h = location.hash.slice(1); return /^[0-9a-f]{20,40}$/i.test(h) ? h : null; };
+// A reference is "<gist id>" (legacy, plaintext data) or "<gist id>.<key>" (encrypted data); the key never leaves the URL fragment.
+const REF = /^([0-9a-f]{20,40})(?:\.([A-Za-z0-9_-]{43}))?$/i;
+const fragId = () => { const h = location.hash.slice(1); return REF.test(h) ? h : null; };
+const idOf = (ref) => String(ref).split(".")[0];
 function saved() { try { return localStorage.getItem("gist"); } catch { return null; } }
 const gistId = () => fragId() || saved();
+
+// Decrypts the gist file text. A key demands encrypted data and no key demands plaintext: no downgrade.
+async function open(text, key) {
+  const doc = JSON.parse(text);
+  const enc = doc !== null && typeof doc === "object" && doc.v === 1 && doc.enc === "A256GCM";
+  if (!key) {
+    if (enc) throw new Error("This data is encrypted. Open the full link Install.ps1 printed (it ends with .<key>).");
+    return validateUsage(doc);
+  }
+  if (!enc) throw new Error("Expected encrypted data but the gist is not encrypted.");
+  let plain;
+  try {
+    const b64 = (s) => Uint8Array.from(atob(s.replace(/-/g, "+").replace(/_/g, "/")), (c) => c.charCodeAt(0));
+    const iv = b64(doc.iv);
+    if (iv.length !== 12) throw 0;
+    const k = await crypto.subtle.importKey("raw", b64(key), "AES-GCM", false, ["decrypt"]);
+    plain = new TextDecoder().decode(await crypto.subtle.decrypt({ name: "AES-GCM", iv }, k, b64(doc.ct)));
+  } catch { throw new Error("Could not decrypt usage.json: the link's key does not match."); }
+  return validateUsage(JSON.parse(plain));
+}
 
 // Reject, never coerce: the page renders only a document that passed this.
 function validateUsage(doc) {
@@ -277,8 +300,9 @@ async function load(adopt) {
   const frag = fragId(), old = saved();
   if (frag && old && frag !== old && adopt !== frag) { choice = frag; return render(); }
   choice = null;
-  const id = frag || old;
-  if (!id) return render();
+  const ref = frag || old;
+  if (!ref) return render();
+  const [id, key] = ref.split(".");
   $("#refresh").disabled = true;
   try {
     const r = await fetch("https://api.github.com/gists/" + id, { cache: "no-store", headers: { Accept: "application/vnd.github+json" } });
@@ -286,7 +310,7 @@ async function load(adopt) {
     const f = (await r.json()).files["usage.json"];
     if (!f) throw new Error("usage.json is not in the gist yet");
     const text = f.truncated ? await (await fetch(f.raw_url, { cache: "no-store" })).text() : f.content;
-    data = validateUsage(JSON.parse(text)); err = null;
+    data = await open(text, key); err = null;
     if (frag && frag !== old) try { localStorage.setItem("gist", frag); } catch {}
   } catch (e) { err = e.message; }
   $("#refresh").disabled = false;
