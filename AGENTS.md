@@ -91,3 +91,12 @@ session that lost the guidance must not also lose these.
 ## Repo-specific additions
 
 <!-- Add your repo-specific agent guidance below this line -->
+
+### CI salient paths
+
+[CI](.github/workflows/ci.yml) always reports `node-test` and `pester` on pull requests and pushes to `main`; both are intended required checks. Repository settings are managed separately. Each job detects changes after checkout, runs its suite on uncertain comparisons, and succeeds without testing when no salient path changed.
+
+| Job | Salient paths |
+|---|---|
+| `node-test` | `index.html`, `tests/**`, `collector/AiUsage.psm1` (encryption interoperability), `.github/workflows/ci.yml` |
+| `pester` | `collector/AiUsage.psm1`, `collector/tests/**`, `.github/workflows/ci.yml` |

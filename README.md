@@ -41,14 +41,18 @@ The collector never refreshes login tokens. If one expires, the page keeps the l
 
 `~/.config/ai-usage/config.json` accepts an optional `days`: how many days of Claude platform history to fetch. The default is 30 and the maximum is 300 (larger values are capped). The collector reads at most 10 pages of 31 daily buckets (310), and the page rejects data older than 398 days, so 300 is the most that both can carry. A missing, zero, negative or non-numeric value means 30.
 
-The page and the collector agree on size by construction. The collector sums the platform usage and cost lines to one row per (date, model), which is all the page draws, and publishes compact JSON. The page accepts up to 10,000 rows per list, 300 distinct models, 200-character strings and 4 MB of text (the encrypted envelope, which is about a third larger than the JSON inside it). The collector applies the same row, model and string limits, and checks the final published text against 3.5 MB: 300 days with 33 models a day is about 2.2 MB encrypted. When a limit is exceeded the collector publishes an error for the platform source instead of a document the page would reject (the other sources still publish); lower `days` in that case. The page rejects a negative cost, so a (date, model) total that nets below zero (a credit) is published as 0 and counted in the platform source's `floored_credits`. The page still accepts the older, un-aggregated shape in gists published earlier.
+The page and the collector agree on size by construction. The collector sums the platform usage and cost lines to one row per (date, model), which is all the page draws, and publishes compact JSON. The page accepts up to 10,000 rows per list, 300 distinct models, 200-character strings and 4 MB of text (the encrypted envelope, which is about a third larger than the JSON inside it). The collector applies the same row, model and string limits, and checks the final published text against 3.5 MB: 300 days with 33 models a day is about 2.2 MB encrypted. When the final text exceeds the size limit, the collector keeps earlier platform rows with an error if they fit; otherwise it publishes only the platform error (the other sources still publish). Lower `days` in that case. The page rejects a negative cost, so a (date, model) total that nets below zero (a credit) is published as 0 and counted in the platform source's `floored_credits`. The page still accepts the older, un-aggregated shape in gists published earlier.
 
 A failed source publishes only a short fixed phrase and the source name (`claude: HTTP 401`, `codex: timeout`, `platform: DNS failure`, `claude: request failed`), never the raw exception text, which could echo a URL, header or response body.
 
-## Tests
+The local `~/.config/ai-usage/usage.json` is plaintext compact JSON followed by a newline. The collector and installer read it with `Get-Content -Raw | ConvertFrom-Json`, which accepts compact and pretty JSON. The gist receives compact JSON encrypted in an envelope when a key is configured.
 
-    pwsh collector/tests/Run-Tests.ps1
-    node --test tests/*.test.mjs    # the page: validation, escaping, saved-id handling, CSP hash
+## Tests and CI
+
+    node --test tests/*.test.mjs
+    pwsh -NoProfile -File collector/tests/Run-Tests.ps1
+
+[CI](.github/workflows/ci.yml) runs both suites on Ubuntu for pull requests and pushes to `main`, with `node-test` and `pester` intended as required checks. Changes outside each suite's salient paths report success without running that suite. The workflow policy test uses `ConvertFrom-Yaml`: CI installs the pinned `powershell-yaml` 0.4.12 module before Pester and fails if the parser is unavailable. Locally, when the module is absent, only the workflow policy assertions are visibly skipped.
 
 ## Uninstall
 

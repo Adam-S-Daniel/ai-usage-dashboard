@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'sha256-xtEV/tXPl4PPy0W6qxcZ6gql/7kvGjbIyFZZE1MXSOA='; connect-src https://api.github.com https://gist.githubusercontent.com; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'sha256-0M73Qz+ekRh9RJfFsDIlQzUte9Vd5ecexcwopVxFZjs='; connect-src https://api.github.com https://gist.githubusercontent.com; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'">
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-title" content="AI Usage">
@@ -258,7 +258,7 @@ async function open(text, key) {
   let plain;
   try {
     // iv and ct come from the gist: check their shape before decoding. The key was shape-checked by REF.
-    const b64 = (s) => { if (typeof s !== "string" || s.length > MAX_TEXT || !/^[A-Za-z0-9_-]+$/.test(s)) throw 0; return Uint8Array.from(atob(s.replace(/-/g, "+").replace(/_/g, "/")), (c) => c.charCodeAt(0)); };
+    const b64 = (s) => { if (typeof s !== "string" || !/^[A-Za-z0-9_-]+$/.test(s)) throw 0; return Uint8Array.from(atob(s.replace(/-/g, "+").replace(/_/g, "/")), (c) => c.charCodeAt(0)); };
     const iv = b64(doc.iv);
     if (iv.length !== 12) throw 0;
     const k = await crypto.subtle.importKey("raw", b64(key), "AES-GCM", false, ["decrypt"]);
