@@ -62,9 +62,11 @@ In the Claude Console: Settings > Workload identity > Connect workload (field na
 
   Issuer
     Issuer URL      $($wif.issuer)
-    Keys (JWKS)     inline, paste one of:
-                      key only:  $jwk
-                      full JWKS: {"keys":[$jwk]}
+    Keys (JWKS)     Inline keys. The field starts out holding []. Paste the
+                    single key between the brackets, or replace the contents
+                    with the keys array:
+                      single key: $jwk
+                      keys array: [$jwk]
   Rule
     Subject         $($wif.subject)      (exact match)
     Audience        $($wif.audience)
