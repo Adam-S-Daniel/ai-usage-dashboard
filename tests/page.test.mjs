@@ -54,7 +54,7 @@ async function boot({ hash = "", saved = {}, gists = {}, failOn = null, wait = t
       if (typeof g === "function") return g(id);
       if (g === undefined) return { ok: false, status: 404 };
       const content = typeof g === "string" ? g : JSON.stringify(g);
-      return { ok: true, json: async () => ({ files: { "usage.json": { content } } }) };
+      return new Response(JSON.stringify({ files: { "usage.json": { content } } }));
     },
   };
   vm.createContext(ctx);
@@ -198,7 +198,7 @@ test("m: a document encrypted by the PowerShell collector decrypts in the page",
 });
 
 const doc1 = (model, extra = {}) => { const d = validDoc(); d.sources.platform.usage[0].model = model; d.sources.platform.costs[0].model = model; return Object.assign(d, extra); };
-const resp = (doc) => ({ ok: true, json: async () => ({ files: { "usage.json": { content: JSON.stringify(doc) } } }) });
+const resp = (doc) => new Response(JSON.stringify({ files: { "usage.json": { content: JSON.stringify(doc) } } }));
 const deferred = () => { let resolve; const promise = new Promise((r) => (resolve = r)); return { promise, resolve }; };
 
 test("r1-h: the crashing gist (year-0001 dates) is rejected, not saved, and the page is not blank", async () => {
@@ -355,8 +355,8 @@ test("r1-q: the chooser does not stick when the link changes to #demo", async ()
 
 // ---- second review round ----
 
-const rawResp = (text) => ({ ok: true, text: async () => text });
-const truncatedResp = (rawUrl) => ({ ok: true, json: async () => ({ files: { "usage.json": { truncated: true, raw_url: rawUrl } } }) });
+const rawResp = (text) => new Response(text);
+const truncatedResp = (rawUrl) => new Response(JSON.stringify({ files: { "usage.json": { truncated: true, raw_url: rawUrl } } }));
 const RAW = "https://gist.githubusercontent.com/example/raw/";
 
 test("r2-a: a truncated gist is read through raw_url; a stale raw response is ignored", async () => {
@@ -409,7 +409,7 @@ test("r2-c: crafted fragments are never fetched, saved or shown", async () => {
 
 test("r2-d1: an oversized gist (5.5 MB of valid-looking JSON) is rejected with a clear error and small markup", async () => {
   const doc = validDoc();
-  doc.sources.platform.usage = Array.from({ length: 50000 }, () => doc.sources.platform.usage[0]);
+  doc.sources.platform.usage = Array.from({ length: 60000 }, () => doc.sources.platform.usage[0]);
   const text = JSON.stringify(doc);
   assert.ok(text.length > 5e6);
   const p = await boot({ hash: "#" + A, gists: { [A]: text } });
@@ -419,7 +419,7 @@ test("r2-d1: an oversized gist (5.5 MB of valid-looking JSON) is rejected with a
 });
 
 test("r2-d2: an oversized encrypted envelope is rejected before decoding", async () => {
-  const k = newKey(), env = JSON.stringify({ v: 1, enc: "A256GCM", iv: "A".repeat(16), ct: "A".repeat(2e6 + 10) });
+  const k = newKey(), env = JSON.stringify({ v: 1, enc: "A256GCM", iv: "A".repeat(16), ct: "A".repeat(4e6 + 10) });
   const p = await boot({ hash: `#${A}.${k}`, gists: { [A]: env } });
   assert.match(p.app(), /missing or too large/);
 });
@@ -445,8 +445,8 @@ test("r2-d5: row, window, model and string counts are capped", async () => {
   const rows = (n, f) => Array.from({ length: n }, (_, i) => f(i));
   const usage = (m) => ({ date: day(1), model: m, input: 1, cache_write: 0, cache_read: 0, output: 1 });
   const cases = [
-    ["usage rows", (d, n) => (d.sources.platform.usage = rows(n, () => usage("m"))), 5000, /sources\.platform\.usage/],
-    ["cost rows", (d, n) => (d.sources.platform.costs = rows(n, () => ({ date: day(1), model: "m", usd: 1 }))), 5000, /sources\.platform\.costs/],
+    ["usage rows", (d, n) => (d.sources.platform.usage = rows(n, () => usage("m"))), 10000, /sources\.platform\.usage/],
+    ["cost rows", (d, n) => (d.sources.platform.costs = rows(n, () => ({ date: day(1), model: "m", usd: 1 }))), 10000, /sources\.platform\.costs/],
     ["windows", (d, n) => (d.sources.claude.windows = rows(n, () => ({ label: "w", used_pct: 1, period_seconds: 60 }))), 20, /sources\.claude\.windows/],
     ["models", (d, n) => { d.sources.platform.costs = []; d.sources.platform.usage = rows(n, (i) => usage("m" + i)); }, 300, /sources\.platform\.models/],
     ["model length", (d, n) => (d.sources.platform.usage = [usage("m".repeat(n))]), 200, /usage\[0\]\.model/],
@@ -537,4 +537,117 @@ test("r2-g4: a timed reload of the same source keeps showing the data while it r
   await p.settle();
   assert.match(p.app(), /Refresh failed: GitHub returned 500/);
   assert.match(p.app(), /example-model/);
+});
+
+// ---- review round 3 ----
+
+const chunked = (chunks, headers = {}, state = {}) => {
+  let i = 0;
+  const body = new ReadableStream({
+    pull(c) { if (i >= chunks.length) return c.close(); state.pulled = (state.pulled || 0) + chunks[i].length; c.enqueue(chunks[i++]); },
+    cancel() { state.cancelled = true; },
+  }, { highWaterMark: 0 }); // nothing is pulled until the page reads
+  return new Response(body, { headers });
+};
+const mb = (n) => new Uint8Array(n * 1e6).fill(120); // "x" bytes
+
+test("r3-1a: a document at the collector's maximum (300 days, 33 models, aggregated) is accepted", async () => {
+  const doc = validDoc(), models = Array.from({ length: 33 }, (_, i) => "example-model-" + i), usage = [], costs = [];
+  for (let d = 0; d < 300; d++) for (const m of models) {
+    usage.push({ date: day(d), model: m, input: 123456789, cache_write: 123456, cache_read: 1234567890, output: 12345678 });
+    costs.push({ date: day(d), model: m, usd: 12.3456789 });
+  }
+  doc.sources.platform.usage = usage; doc.sources.platform.costs = costs;
+  assert.equal(usage.length, 9900);
+  assert.ok(JSON.stringify(doc).length < 4e6);
+  const p = await boot({ hash: "#" + A, gists: { [A]: doc } });
+  assert.doesNotMatch(p.app(), /malformed|too large/);
+  assert.match(p.app(), /example-model-32/);
+  assert.equal(p.store.get("gist"), A);
+});
+
+test("r3-1b: the older un-aggregated shape at 300 days (4 models x 5 cost lines a day) is still accepted", async () => {
+  const doc = validDoc(), usage = [], costs = [];
+  for (let d = 0; d < 300; d++) for (let m = 1; m <= 4; m++) {
+    usage.push({ date: day(d), model: "example-model-" + m, input: 1, cache_write: 1, cache_read: 1, output: 1 });
+    for (let c = 0; c < 5; c++) costs.push({ date: day(d), model: "example-model-" + m, usd: 0.5 });
+  }
+  doc.sources.platform.usage = usage; doc.sources.platform.costs = costs;
+  assert.equal(costs.length, 6000);
+  const p = await boot({ hash: "#" + A, gists: { [A]: doc } });
+  assert.doesNotMatch(p.app(), /malformed|too large/);
+  assert.equal(p.store.get("gist"), A);
+});
+
+test("r3-2: validation runs on the DECRYPTED document: invalid fields are rejected, not rendered, not saved", async () => {
+  const k = newKey();
+  for (const [path, set] of [["input", (d) => (d.sources.platform.usage[0].input = "<img src=x onerror=globalThis.pwned=1>")],
+    ["used_pct", (d) => (d.sources.claude.windows[0].used_pct = "50")], ["date", (d) => (d.sources.platform.costs[0].date = '2026-10-01"><img src=x>')]]) {
+    const doc = validDoc(); set(doc);
+    const p = await boot({ hash: `#${A}.${k}`, gists: { [A]: encrypt(doc, k) } });
+    assert.match(p.app(), new RegExp("usage\\.json is malformed: .*" + path), path);
+    assert.doesNotMatch(p.app(), /<img/);
+    assert.doesNotMatch(p.app(), /example-model/);
+    assert.equal(p.store.has("gist"), false);
+  }
+});
+
+test("r3-3a: a raw_url body over the cap is refused by its content-length header without being read", async () => {
+  const st = {};
+  const gists = { [A]: () => Promise.resolve(truncatedResp(RAW + "rawA")), rawA: () => Promise.resolve(chunked([mb(1)], { "content-length": "9000000" }, st)) };
+  const p = await boot({ hash: "#" + A, gists });
+  assert.match(p.app(), /missing or too large/);
+  assert.equal(st.pulled ?? 0, 0);
+  assert.equal(p.store.has("gist"), false);
+});
+
+test("r3-3b: with no content-length the raw_url body is cut off at the cap while reading", async () => {
+  const st = {}, chunks = Array.from({ length: 50 }, () => mb(1)); // 50 MB offered
+  const gists = { [A]: () => Promise.resolve(truncatedResp(RAW + "rawA")), rawA: () => Promise.resolve(chunked(chunks, {}, st)) };
+  const p = await boot({ hash: "#" + A, gists });
+  assert.match(p.app(), /missing or too large/);
+  assert.ok(st.pulled <= 8e6, "pulled " + st.pulled);
+  assert.equal(st.cancelled, true);
+  assert.equal(p.store.has("gist"), false);
+});
+
+test("r3-3c: a content-length that understates the body does not help", async () => {
+  const st = {}, chunks = Array.from({ length: 50 }, () => mb(1));
+  const gists = { [A]: () => Promise.resolve(truncatedResp(RAW + "rawA")), rawA: () => Promise.resolve(chunked(chunks, { "content-length": "100" }, st)) };
+  const p = await boot({ hash: "#" + A, gists });
+  assert.match(p.app(), /missing or too large/);
+  assert.ok(st.pulled <= 8e6, "pulled " + st.pulled);
+});
+
+test("r3-3d: the gist API response is read with a byte limit too", async () => {
+  const st = {}, chunks = Array.from({ length: 60 }, () => mb(1));
+  const p = await boot({ hash: "#" + A, gists: { [A]: () => Promise.resolve(chunked(chunks, {}, st)) } });
+  assert.match(p.app(), /missing or too large/);
+  assert.ok(st.pulled <= 12e6, "pulled " + st.pulled);
+  assert.equal(st.cancelled, true);
+});
+
+test("r3-3e: a body at the cap-sized limit still loads (multi-byte text decodes across chunks)", async () => {
+  const doc = doc1("modèl-é-日本"), bytes = new TextEncoder().encode(JSON.stringify({ files: { "usage.json": { content: JSON.stringify(doc) } } }));
+  const mid = Math.floor(bytes.length / 2);
+  const p = await boot({ hash: "#" + A, gists: { [A]: () => Promise.resolve(chunked([bytes.slice(0, mid), bytes.slice(mid)])) } });
+  assert.match(p.app(), /modèl-é-日本/);
+});
+
+test("r3-5a: a failing raw_url download shows an error and saves nothing", async () => {
+  const gists = { [A]: () => Promise.resolve(truncatedResp(RAW + "rawA")), rawA: () => Promise.resolve(new Response("nope", { status: 500 })) };
+  const p = await boot({ hash: "#" + A, gists });
+  assert.match(p.app(), /Could not load data/);
+  assert.match(p.app(), /GitHub returned 500/);
+  assert.equal(p.store.has("gist"), false);
+});
+
+test("r3-5b: the same gist id with a different key is worded as a different key, not a different source", async () => {
+  const k1 = newKey(), k2 = newKey();
+  const p = await boot({ hash: `#${A}.${k1}`, saved: { gist: `${A}.${k2}` }, gists: {} });
+  assert.match(p.app(), /Different key/);
+  assert.match(p.app(), /same data source/);
+  assert.doesNotMatch(p.app(), /different data source/);
+  assert.equal(p.app().includes(k1) || p.app().includes(k2), false);
+  assert.equal(p.fetched.length, 0);
 });

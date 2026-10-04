@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'sha256-N+VRDa6UU6ZgNNVrYd9KiiXL60gqmxUAdoa9rWdguls='; connect-src https://api.github.com https://gist.githubusercontent.com; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'sha256-N1O2MhFp8WNzykjl+LHiO0pYFR1C7RAewoPfKF0O8vc='; connect-src https://api.github.com https://gist.githubusercontent.com; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'">
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-title" content="AI Usage">
@@ -71,7 +71,10 @@ const fmtTok = (n) => n >= 1e9 ? (n / 1e9).toFixed(2) + "B" : n >= 1e6 ? (n / 1e
 const fmtUsd = (n) => "$" + n.toFixed(2);
 const STALE_MIN = 12, DAY = 864e5, MAX_DAYS = 400;
 // Size caps: a valid gist must not be able to make the page build megabytes of markup.
-const MAX_TEXT = 2e6, MAX_ROWS = 5000, MAX_WINDOWS = 20, MAX_MODELS = 300, MAX_STR = 200, MAX_ERR = 1000, MAX_NUM = 1e15;
+// MAX_ROWS is 400 days x 25 models: the collector aggregates to one row per (date, model) per list and refuses to
+// publish more than MAX_ROWS, so what it publishes (at most 300 days) always passes. MAX_TEXT is the real size limit.
+// The gist API response also lists up to thousands of revisions (the collector writes every 5 minutes), hence MAX_API.
+const MAX_TEXT = 4e6, MAX_API = 1e7, MAX_ROWS = 10000, MAX_WINDOWS = 20, MAX_MODELS = 300, MAX_STR = 200, MAX_ERR = 1000, MAX_NUM = 1e15;
 let data = null, lastRef = null, adopted = null, err = null, choice = null, seq = 0; // choice: fragment (id or id.key) awaiting the user's decision
 
 function dur(ms) {
@@ -189,7 +192,10 @@ function render() {
   }
   if (choice) {
     $("#updated").textContent = "Choose a data source";
-    app.innerHTML = `<section class="card banner"><h2>Different data source</h2><p class="sub">This link points at a different data source (<code>${esc(idOf(choice))}</code>) than the one saved on this device (<code>${esc(idOf(saved()))}</code>). Only use the new link if you trust where it came from.</p><div class="row"><button id="keep">Keep the saved one</button><button id="adopt">Use the new link</button></div></section>`;
+    const same = idOf(choice) === idOf(saved());
+    app.innerHTML = `<section class="card banner"><h2>${same ? "Different key" : "Different data source"}</h2><p class="sub">${same
+      ? `This link points at the same data source (<code>${esc(idOf(choice))}</code>) as the one saved on this device, but with a different key.`
+      : `This link points at a different data source (<code>${esc(idOf(choice))}</code>) than the one saved on this device (<code>${esc(idOf(saved()))}</code>).`} Only use the new link if you trust where it came from.</p><div class="row"><button id="keep">Keep the saved one</button><button id="adopt">Use the new link</button></div></section>`;
     $("#adopt").addEventListener("click", () => load(choice));
     $("#keep").addEventListener("click", () => { history.replaceState(null, "", location.pathname + location.search); load(); });
     return;
@@ -222,6 +228,23 @@ function saved() { try { const v = localStorage.getItem("gist"); return REF.test
 const gistId = () => fragId() || saved();
 
 // Decrypts the gist file text. A key demands encrypted data and no key demands plaintext: no downgrade.
+// Reads a response body as text, refusing anything over max bytes: by the content-length header when there is
+// one, and while reading, since the header can be absent or wrong. The download stops at the limit.
+async function readText(r, max) {
+  const tooBig = () => new Error("usage.json is missing or too large");
+  const len = Number(r.headers && r.headers.get && r.headers.get("content-length"));
+  if (len > max) throw tooBig();
+  if (!r.body || !r.body.getReader) { const t = await r.text(); if (t.length > max) throw tooBig(); return t; }
+  const reader = r.body.getReader(), dec = new TextDecoder();
+  let bytes = 0, text = "";
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) return text + dec.decode();
+    bytes += value.length;
+    if (bytes > max) { await reader.cancel(); throw tooBig(); }
+    text += dec.decode(value, { stream: true });
+  }
+}
 const parseJson = (t) => { try { return JSON.parse(t); } catch { throw new Error("usage.json is not valid JSON"); } };
 async function open(text, key) {
   if (typeof text !== "string" || text.length > MAX_TEXT) throw new Error("usage.json is missing or too large");
@@ -241,7 +264,6 @@ async function open(text, key) {
     const k = await crypto.subtle.importKey("raw", b64(key), "AES-GCM", false, ["decrypt"]);
     plain = new TextDecoder().decode(await crypto.subtle.decrypt({ name: "AES-GCM", iv }, k, b64(doc.ct)));
   } catch { throw new Error("Could not decrypt usage.json: the link's key does not match."); }
-  if (plain.length > MAX_TEXT) throw new Error("usage.json is too large");
   return validateUsage(parseJson(plain));
 }
 
@@ -353,7 +375,7 @@ async function load(adopt) {
     const r = await fetch("https://api.github.com/gists/" + id, { cache: "no-store", headers: { Accept: "application/vnd.github+json" } });
     if (my !== seq) return;
     if (!r.ok) throw new Error(r.status === 403 ? "GitHub rate limit reached; try again in a few minutes" : "GitHub returned " + r.status);
-    const body = await r.json();
+    const body = parseJson(await readText(r, MAX_API));
     if (my !== seq) return;
     const f = body && body.files && body.files["usage.json"];
     if (!f) throw new Error("usage.json is not in the gist yet");
@@ -362,7 +384,7 @@ async function load(adopt) {
       if (typeof f.raw_url !== "string" || !f.raw_url.startsWith("https://gist.githubusercontent.com/")) throw new Error("usage.json has no usable download link");
       const rr = await fetch(f.raw_url, { cache: "no-store" });
       if (!rr.ok) throw new Error("GitHub returned " + rr.status);
-      text = await rr.text();
+      text = await readText(rr, MAX_TEXT);
     }
     const doc = await open(text, key);
     if (my !== seq) return; // a newer load began while this one was reading or decrypting

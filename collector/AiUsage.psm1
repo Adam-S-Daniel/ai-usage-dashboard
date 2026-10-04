@@ -85,26 +85,52 @@ function Expand-ReportRows($Pages) {
     }
 }
 
+# The page draws only per-model totals and per-day, per-model costs, so rows are summed to one per (date, model)
+# in each list. The page accepts at most 10000 rows per list; past that this reports an error instead of
+# publishing a document the page would reject. 300 days (the config maximum) fits with up to 33 models a day.
+$script:MaxPlatformRows = 10000
+
 function ConvertTo-PlatformSource {
     param($UsagePages, $CostPages, [datetimeoffset]$Now)
-    $usage = foreach ($e in Expand-ReportRows $UsagePages) {
+    $usage = [ordered]@{}
+    foreach ($e in Expand-ReportRows $UsagePages) {
         $r = $e.row
         $in = Get-Prop $r 'uncached_input_tokens'; if ($null -eq $in) { $in = Get-Prop $r 'input_tokens' }
         $cc = Get-Prop $r 'cache_creation'
         $cw = if ($cc) { [long](Get-Prop $cc 'ephemeral_1h_input_tokens') + [long](Get-Prop $cc 'ephemeral_5m_input_tokens') }
         else { [long](Get-Prop $r 'cache_creation_input_tokens') }
-        [ordered]@{
+        $row = [ordered]@{
             date = $e.date; model = [string](Get-Prop $r 'model'); input = [long]$in; cache_write = $cw
             cache_read = [long](Get-Prop $r 'cache_read_input_tokens'); output = [long](Get-Prop $r 'output_tokens')
         }
+        $k = "$($row.date)|$($row.model)"
+        if ($usage.Contains($k)) { foreach ($f in 'input', 'cache_write', 'cache_read', 'output') { $usage[$k][$f] += $row[$f] } }
+        else { $usage[$k] = $row }
     }
-    $costs = foreach ($e in Expand-ReportRows $CostPages) {
+    $cents = [ordered]@{}
+    foreach ($e in Expand-ReportRows $CostPages) {
         $r = $e.row
         $model = Get-Prop $r 'model'; if (-not $model) { $model = Get-Prop $r 'description' }
-        # amount is a decimal string in cents
-        [ordered]@{ date = $e.date; model = [string]$model; usd = [double]([decimal]::Parse([string]$r.amount, [cultureinfo]::InvariantCulture) / 100) }
+        # amount is a decimal string in cents; summed as decimals so the total carries no floating-point noise
+        $c = [decimal]::Parse([string]$r.amount, [cultureinfo]::InvariantCulture)
+        $k = "$($e.date)|$([string]$model)"
+        if ($cents.Contains($k)) { $cents[$k].cents += $c } else { $cents[$k] = @{ date = $e.date; model = [string]$model; cents = $c } }
     }
-    [ordered]@{ ok = $true; fetched_at = ConvertTo-IsoUtc $Now; usage = @($usage); costs = @($costs) }
+    $costs = foreach ($v in $cents.Values) { [ordered]@{ date = $v.date; model = $v.model; usd = [double]($v.cents / 100) } }
+    if ($usage.Count -gt $script:MaxPlatformRows -or $cents.Count -gt $script:MaxPlatformRows) {
+        return @{ ok = $false; error = "Too many usage rows for the page ($($usage.Count) usage, $($cents.Count) cost; the limit is $script:MaxPlatformRows). Lower days in config.json." }
+    }
+    [ordered]@{ ok = $true; fetched_at = ConvertTo-IsoUtc $Now; usage = @($usage.Values); costs = @($costs) }
+}
+
+# What the page shows for a failed source. The messages these calls produce carry a status code or a host
+# name, never a URL, header or response body (checked against PowerShell 7.6; the body is in ErrorDetails,
+# which is not stored); credential-shaped text is redacted anyway, and the length is capped well under
+# the page's 1000-character limit, so one long error cannot make the whole document unreadable.
+function Get-ErrorText([string]$Message) {
+    $t = [regex]::Replace($Message, '(?i)(bearer\s+)\S+|sk-ant-[A-Za-z0-9_-]+|eyJ[A-Za-z0-9_-]{8,}(\.[A-Za-z0-9_-]+){0,2}', { param($m) if ($m.Groups[1].Success) { $m.Groups[1].Value + '[redacted]' } else { '[redacted]' } })
+    $t = ($t -replace '\s+', ' ').Trim()
+    if ($t.Length -gt 300) { $t.Substring(0, 299) + '…' } else { $t }
 }
 
 function Merge-Source {
@@ -391,7 +417,7 @@ function Invoke-AiUsageCollect {
     }
     $sources = [ordered]@{}
     foreach ($name in $fetchers.Keys) {
-        $result = try { & $fetchers[$name] } catch { @{ ok = $false; error = $_.Exception.Message } }
+        $result = try { & $fetchers[$name] } catch { @{ ok = $false; error = Get-ErrorText $_.Exception.Message } }
         $sources[$name] = Merge-Source -Previous (Get-Prop $prev $name) -Result $result
     }
     $json = [ordered]@{ schema = 1; generated_at = ConvertTo-IsoUtc $now; host = [Environment]::MachineName; sources = $sources } | ConvertTo-Json -Depth 8
@@ -402,4 +428,4 @@ function Invoke-AiUsageCollect {
     $json
 }
 
-Export-ModuleMember -Function ConvertTo-*, ConvertFrom-Base64Url, New-UsageKey, Protect-UsageJson, Unprotect-UsageJson, Get-WindowLabel, New-Wif*, Select-PlatformAuth, Get-WifKey, Merge-Source, Get-CollectDays, Select-ClaudeCredential, Get-CodexCredential, Save-AdminKey, Read-AdminKey, Invoke-AiUsageCollect
+Export-ModuleMember -Function ConvertTo-*, ConvertFrom-Base64Url, New-UsageKey, Protect-UsageJson, Unprotect-UsageJson, Get-WindowLabel, New-Wif*, Select-PlatformAuth, Get-WifKey, Merge-Source, Get-ErrorText, Get-CollectDays, Select-ClaudeCredential, Get-CodexCredential, Save-AdminKey, Read-AdminKey, Invoke-AiUsageCollect

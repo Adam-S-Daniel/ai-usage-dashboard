@@ -258,3 +258,57 @@ Describe 'Get-CollectDays' {
         Get-CollectDays @{ days = 100000 } | Should -Be 300
     }
 }
+
+Describe 'ConvertTo-PlatformSource aggregation' {
+    It 'sums rows to one per date and model, as decimals, keeping first-seen order' {
+        $cost = '{"data":[{"starting_at":"2026-10-01T00:00:00Z","results":[' +
+            '{"amount":"0.1","model":"m1","description":"Input"},{"amount":"0.2","model":"m1","description":"Output"},{"amount":"0.2","model":"m1","description":"Cache"},' +
+            '{"amount":"50","model":"m2","description":"Input"}]},{"starting_at":"2026-10-02T00:00:00Z","results":[{"amount":"100","model":"m1"}]}]}' | ConvertFrom-Json
+        $usage = '{"data":[{"starting_at":"2026-10-01T00:00:00Z","results":[{"model":"m1","uncached_input_tokens":1,"cache_read_input_tokens":2,"output_tokens":3},{"model":"m1","uncached_input_tokens":10,"cache_read_input_tokens":20,"output_tokens":30,"cache_creation_input_tokens":4}]}]}' | ConvertFrom-Json
+        $s = ConvertTo-PlatformSource -UsagePages @($usage) -CostPages @($cost) -Now $script:Now
+        $s.costs.Count | Should -Be 3
+        ($s.costs | % { "$($_.date) $($_.model) $($_.usd)" }) -join ';' | Should -Be '2026-10-01 m1 0.005;2026-10-01 m2 0.5;2026-10-02 m1 1'
+        $s.usage.Count | Should -Be 1
+        $s.usage[0].input | Should -Be 11
+        $s.usage[0].cache_read | Should -Be 22
+        $s.usage[0].output | Should -Be 33
+        $s.usage[0].cache_write | Should -Be 4
+    }
+    It 'turns 300 days x 4 models x 5 cost lines into 1200 cost rows' {
+        $buckets = foreach ($d in 0..299) {
+            $day = ([datetime]'2026-01-01').AddDays($d).ToString('yyyy-MM-ddT00:00:00Z')
+            $results = foreach ($m in 1..4) { foreach ($c in 1..5) { @{ amount = '1.5'; model = "example-model-$m"; description = "line $c" } } }
+            @{ starting_at = $day; results = @($results) }
+        }
+        $cost = @{ data = @($buckets) } | ConvertTo-Json -Depth 6 | ConvertFrom-Json
+        $s = ConvertTo-PlatformSource -UsagePages @() -CostPages @($cost) -Now $script:Now
+        $s.ok | Should -Be $true
+        $s.costs.Count | Should -Be 1200
+        $s.costs[0].usd | Should -Be 0.075
+    }
+    It 'reports an error rather than publishing more rows than the page accepts' {
+        $rows = foreach ($i in 1..10001) { @{ date = '2026-10-01'; model = "m$i"; input_tokens = 1; output_tokens = 1 } }
+        $usage = @{ data = @($rows) } | ConvertTo-Json -Depth 4 | ConvertFrom-Json
+        $s = ConvertTo-PlatformSource -UsagePages @($usage) -CostPages @() -Now $script:Now
+        $s.ok | Should -Be $false
+        ($s.error -match 'Too many usage rows') | Should -Be $true
+    }
+}
+
+Describe 'Get-ErrorText' {
+    It 'truncates a long message well under the page limit' {
+        $t = Get-ErrorText ('x' * 5000)
+        $t.Length | Should -Be 300
+        $t.EndsWith('…') | Should -Be $true
+    }
+    It 'keeps a short status message as it is' {
+        Get-ErrorText 'Response status code does not indicate success: 401 (Unauthorized).' | Should -Be 'Response status code does not indicate success: 401 (Unauthorized).'
+    }
+    It 'redacts bearer tokens, API keys and JWTs, and collapses whitespace' {
+        $jwt = 'eyJhbGciOiJSUzI1NiJ9.eyJzdWIiOiJ4In0.c2ln'
+        $t = Get-ErrorText "failed`n Bearer abc123 with sk-ant-admin01-SECRETVALUE and $jwt"
+        ($t -match 'abc123|SECRETVALUE|eyJ') | Should -Be $false
+        ($t -match '\n') | Should -Be $false
+        $t | Should -Be 'failed Bearer [redacted] with [redacted] and [redacted]'
+    }
+}

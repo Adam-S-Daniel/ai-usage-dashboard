@@ -39,6 +39,8 @@ Fallback: `-SetAdminKey` prompts for an API key with hidden input and stores it 
 
 `~/.config/ai-usage/config.json` accepts an optional `days`: how many days of Claude platform history to fetch. The default is 30 and the maximum is 300 (larger values are capped). The collector reads at most 10 pages of 31 daily buckets (310), and the page rejects data older than 398 days, so 300 is the most that both can carry. A missing, zero, negative or non-numeric value means 30.
 
+The page and the collector agree on size by construction. The collector sums the platform usage and cost lines to one row per (date, model), which is all the page draws. The page accepts up to 10,000 rows per list (400 days x 25 models) and 4 MB of text, so 300 days fits with up to 33 models a day. If a run would produce more rows than the page accepts, the collector reports that error (the page then keeps the last good numbers and shows it) instead of publishing a document the page would reject; lower `days` in that case. Source error text is truncated to 300 characters and credential-shaped text is redacted. The page still accepts the older, un-aggregated shape in gists published earlier.
+
 The collector never refreshes login tokens. If one expires, the page keeps the last numbers and says so until you open Claude Code or Codex.
 
 ## Tests
