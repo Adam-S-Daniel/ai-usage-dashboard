@@ -3,7 +3,7 @@
 Phone-friendly page showing Claude plan limits, ChatGPT (Codex) plan limits, and Claude platform API tokens and cost.
 Each limit is drawn against how much of its period has elapsed.
 
-- `index.html`: static page on GitHub Pages. Reads `usage.json` from a secret gist. No data is stored in this repo.
+- `index.html`: static page on GitHub Pages. Reads `usage.json` from a secret gist, encrypted (AES-256-GCM) by the collector. No data is stored in this repo.
 - `collector/`: PowerShell 7 script run by Windows Task Scheduler every 5 minutes. It reads the usage numbers and updates the gist. No AI involved.
 
 ## Install (Windows, PowerShell 7, `gh` logged in)
@@ -11,7 +11,9 @@ Each limit is drawn against how much of its period has elapsed.
     pwsh D:\repos\adam-s-daniel\ai-usage-dashboard\collector\Install.ps1
 
 First run creates the public repo (code only), turns on Pages, creates the secret gist, and registers the scheduled task.
-Open the printed link on your phone; the gist id is remembered there.
+Open the printed link on your phone: `<pages url>#<gist id>.<key>`. The key lives only in the URL fragment, which browsers never send to a server, so GitHub and anyone who learns the gist id see only ciphertext. The id and key are remembered in this device's browser storage for the site's origin.
+
+Run `Install.ps1 -Rotate` the first time after upgrading (the old gist's revision history is still plaintext), and whenever the link may have leaked. It creates a new gist and key, publishes to it, then deletes the old gist and its history. Open the new link afterward; a bare `#<gist id>` link still works for a gist that was never encrypted.
 
 ## Claude platform access (optional)
 

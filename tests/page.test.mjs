@@ -2,7 +2,9 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import vm from "node:vm";
 import fs from "node:fs";
+import { fileURLToPath } from "node:url";
 import crypto from "node:crypto";
+import { spawnSync } from "node:child_process";
 
 const html = fs.readFileSync(process.env.PAGE ?? new URL("../index.html", import.meta.url), "utf8");
 const script = html.match(/<script>([\s\S]*?)<\/script>/)[1];
@@ -27,7 +29,7 @@ async function boot({ hash = "", saved = {}, gists = {} } = {}) {
   const el = () => ({ textContent: "", innerHTML: "", disabled: false, handlers: {}, addEventListener(t, f) { this.handlers[t] = f; } });
   const ctx = {
     document: { querySelector: (s) => (els[s] ||= el()), querySelectorAll: () => [], addEventListener() {}, hidden: false },
-    addEventListener() {}, setInterval() {}, console, Date, URL,
+    addEventListener() {}, setInterval() {}, console, Date, URL, atob, TextDecoder, crypto: globalThis.crypto,
     location: { hash, pathname: "/page", search: "" },
     history: { replaceState(_s, _t, url) { ctx.location.hash = ""; ctx.replaced = url; } },
     localStorage: { getItem: (k) => (store.has(k) ? store.get(k) : null), setItem: (k, v) => store.set(k, String(v)) },
@@ -41,10 +43,12 @@ async function boot({ hash = "", saved = {}, gists = {} } = {}) {
   };
   vm.createContext(ctx);
   vm.runInContext(script, ctx);
+  const settle = async () => {   // WebCrypto resolves off the event loop, so wait for the load to finish
+    for (let i = 0; i < 20 || els["#refresh"]?.disabled; i++) await new Promise((r) => setImmediate(r));
+  };
   await settle();
   return { ctx, els, fetched, store, app: () => els["#app"].innerHTML, settle };
 }
-const settle = async () => { for (let i = 0; i < 20; i++) await new Promise((r) => setImmediate(r)); };
 
 test("a: string token count cannot inject markup and is not persisted", async () => {
   const doc = validDoc();
@@ -118,4 +122,60 @@ test("g: a far-past or far-future date is rejected", async () => {
     assert.match(p.app(), /malformed: sources\.platform\.costs\[0\]\.date/);
     assert.equal(p.store.has("gist"), false);
   }
+});
+
+// Same envelope format as collector Protect-UsageJson.
+const newKey = () => crypto.randomBytes(32).toString("base64url");
+function encrypt(doc, key) {
+  const iv = crypto.randomBytes(12), c = crypto.createCipheriv("aes-256-gcm", Buffer.from(key, "base64url"), iv);
+  const ct = Buffer.concat([c.update(typeof doc === "string" ? doc : JSON.stringify(doc), "utf8"), c.final(), c.getAuthTag()]);
+  return { v: 1, enc: "A256GCM", iv: iv.toString("base64url"), ct: ct.toString("base64url") };
+}
+
+test("h: encrypted document with the right key renders and persists id.key", async () => {
+  const key = newKey();
+  const p = await boot({ hash: `#${A}.${key}`, gists: { [A]: encrypt(validDoc(), key) } });
+  assert.match(p.app(), /<td>example-model<\/td>/);
+  assert.equal(p.store.get("gist"), `${A}.${key}`);
+});
+
+test("i: wrong key shows a decrypt error, persists nothing and renders no data", async () => {
+  const p = await boot({ hash: `#${A}.${newKey()}`, gists: { [A]: encrypt(validDoc(), newKey()) } });
+  assert.match(p.app(), /Could not decrypt usage\.json: the link's key does not match\./);
+  assert.doesNotMatch(p.app(), /example-model/);
+  assert.equal(p.store.has("gist"), false);
+});
+
+test("j: a key in the link with a plaintext gist is rejected (no downgrade)", async () => {
+  const p = await boot({ hash: `#${A}.${newKey()}`, gists: { [A]: validDoc() } });
+  assert.match(p.app(), /Expected encrypted data but the gist is not encrypted\./);
+  assert.doesNotMatch(p.app(), /example-model/);
+  assert.equal(p.store.has("gist"), false);
+});
+
+test("k: an encrypted gist behind a legacy link without a key says so", async () => {
+  const p = await boot({ hash: "#" + A, gists: { [A]: encrypt(validDoc(), newKey()) } });
+  assert.match(p.app(), /This data is encrypted\. Open the full link Install\.ps1 printed/);
+  assert.equal(p.store.has("gist"), false);
+});
+
+test("l: the choice card shows only gist ids, never a key", async () => {
+  const k1 = newKey(), k2 = newKey();
+  const p = await boot({ hash: `#${B}.${k1}`, saved: { gist: `${A}.${k2}` }, gists: {} });
+  assert.match(p.app(), /different data source/);
+  assert.ok(p.app().includes(A) && p.app().includes(B));
+  assert.equal(p.app().includes(k1), false);
+  assert.equal(p.app().includes(k2), false);
+  assert.equal(p.fetched.length, 0);
+});
+
+test("m: a document encrypted by the PowerShell collector decrypts in the page", async (t) => {
+  const key = newKey(), psm1 = fileURLToPath(new URL("../collector/AiUsage.psm1", import.meta.url));
+  const r = spawnSync("pwsh", ["-NoProfile", "-Command", "Import-Module $env:T_MODULE -Force; Protect-UsageJson -Json $env:T_JSON -Key $env:T_KEY"],
+    { encoding: "utf8", env: { ...process.env, T_MODULE: psm1, T_KEY: key, T_JSON: JSON.stringify(validDoc()) } });
+  if (r.error?.code === "ENOENT") return t.skip("pwsh is not on PATH");
+  assert.equal(r.status, 0, r.stderr);
+  const p = await boot({ hash: `#${A}.${key}`, gists: { [A]: r.stdout.trim() } });
+  assert.match(p.app(), /<td>example-model<\/td>/);
+  assert.equal(p.store.get("gist"), `${A}.${key}`);
 });
