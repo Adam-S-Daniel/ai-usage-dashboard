@@ -442,8 +442,9 @@ Describe 'New-PublishPayload' {
 Describe 'CI workflow' {
     It 'keeps both required checks available and pins every action' {
         if (-not (Get-Command ConvertFrom-Yaml -ErrorAction SilentlyContinue)) {
-            if (Get-Command Set-ItResult -ErrorAction SilentlyContinue) { Set-ItResult -Skipped -Because 'No YAML parser is installed; no dependency is added.' }
-            else { Write-Host '  YAML policy assertions skipped: no YAML parser is installed.' }
+            if ($env:GITHUB_ACTIONS -or $env:CI) { throw 'ConvertFrom-Yaml is required in CI; the workflow must install the pinned powershell-yaml parser before running Pester.' }
+            Write-Host '  YAML policy assertions skipped locally: no YAML parser is installed; CI installs the pinned powershell-yaml parser.'
+            if (Get-Command Set-ItResult -ErrorAction SilentlyContinue) { Set-ItResult -Skipped -Because 'No YAML parser is installed locally; CI installs the pinned powershell-yaml parser.' }
             return
         }
         $ci = Get-Content -Raw "$PSScriptRoot/../../.github/workflows/ci.yml" | ConvertFrom-Yaml
@@ -474,5 +475,26 @@ Describe 'CI workflow' {
             $command = if ($id -eq 'node-test') { 'node --test tests/*.test.mjs' } else { 'pwsh -NoProfile -File collector/tests/Run-Tests.ps1' }
             @($job.steps | Where-Object { $_.run -eq $command }).Count | Should -Be 1
         }
+
+        $parserSteps = @($ci.jobs.pester.steps | Where-Object { $_.name -eq 'Install YAML parser' })
+        $parserSteps.Count | Should -Be 1
+        $parserStep = $parserSteps[0]
+        $parserStep['if'] | Should -Be "steps.changes.outputs.run == 'true'"
+        $parserStep.shell | Should -Be 'pwsh'
+        $pesterRunIndex = -1
+        $parserRunIndex = -1
+        for ($i = 0; $i -lt $ci.jobs.pester.steps.Count; $i++) {
+            if ($ci.jobs.pester.steps[$i].name -eq 'Run tests') { $pesterRunIndex = $i }
+            if ($ci.jobs.pester.steps[$i].name -eq 'Install YAML parser') { $parserRunIndex = $i }
+        }
+        ($parserRunIndex -lt $pesterRunIndex) | Should -Be $true
+
+        $tokens = $null
+        $parseErrors = $null
+        $installerAst = [System.Management.Automation.Language.Parser]::ParseInput($parserStep.run, [ref]$tokens, [ref]$parseErrors)
+        @($parseErrors).Count | Should -Be 0
+        $installerCommands = @($installerAst.FindAll({ param($node) $node -is [System.Management.Automation.Language.CommandAst] -and $node.GetCommandName() -eq 'Install-Module' }, $true))
+        $installerCommands.Count | Should -Be 1
+        ($installerCommands[0].CommandElements | ForEach-Object { $_.Extent.Text }) -join ' ' | Should -Be 'Install-Module -Name powershell-yaml -RequiredVersion 0.4.12 -Repository PSGallery -Scope CurrentUser -Force -ErrorAction Stop'
     }
 }

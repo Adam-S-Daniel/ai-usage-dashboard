@@ -101,6 +101,10 @@ jobs:
       - name: No salient changes
         if: steps.changes.outputs.run != 'true'
         run: echo 'No relevant changes; required check succeeds.'
+      - name: Install YAML parser
+        if: steps.changes.outputs.run == 'true'
+        shell: pwsh
+        run: Install-Module -Name powershell-yaml -RequiredVersion 0.4.12 -Repository PSGallery -Scope CurrentUser -Force -ErrorAction Stop
       - name: Run tests
         if: steps.changes.outputs.run == 'true'
         run: pwsh -NoProfile -File collector/tests/Run-Tests.ps1

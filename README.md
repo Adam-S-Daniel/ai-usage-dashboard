@@ -52,7 +52,7 @@ The local `~/.config/ai-usage/usage.json` is plaintext compact JSON followed by 
     node --test tests/*.test.mjs
     pwsh -NoProfile -File collector/tests/Run-Tests.ps1
 
-[CI](.github/workflows/ci.yml) runs both suites on Ubuntu for pull requests and pushes to `main`, with `node-test` and `pester` intended as required checks. Changes outside each suite's salient paths report success without running that suite. The workflow policy test uses `ConvertFrom-Yaml` when installed and explicitly skips those assertions otherwise; no parser dependency is added.
+[CI](.github/workflows/ci.yml) runs both suites on Ubuntu for pull requests and pushes to `main`, with `node-test` and `pester` intended as required checks. Changes outside each suite's salient paths report success without running that suite. The workflow policy test uses `ConvertFrom-Yaml`: CI installs the pinned `powershell-yaml` 0.4.12 module before Pester and fails if the parser is unavailable. Locally, when the module is absent, only the workflow policy assertions are visibly skipped.
 
 ## Uninstall
 
