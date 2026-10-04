@@ -627,11 +627,36 @@ test("r3-3d: the gist API response is read with a byte limit too", async () => {
   assert.equal(st.cancelled, true);
 });
 
-test("r3-3e: a body at the cap-sized limit still loads (multi-byte text decodes across chunks)", async () => {
+test("r3-3e: multi-byte text split inside a character across chunks decodes without replacement characters", async () => {
   const doc = doc1("modèl-é-日本"), bytes = new TextEncoder().encode(JSON.stringify({ files: { "usage.json": { content: JSON.stringify(doc) } } }));
-  const mid = Math.floor(bytes.length / 2);
-  const p = await boot({ hash: "#" + A, gists: { [A]: () => Promise.resolve(chunked([bytes.slice(0, mid), bytes.slice(mid)])) } });
+  const cut = bytes.indexOf(0xe6) + 1; // after the first byte of 日 (E6 97 A5)
+  assert.ok(cut > 0 && bytes[cut] === 0x97);
+  const p = await boot({ hash: "#" + A, gists: { [A]: () => Promise.resolve(chunked([bytes.slice(0, cut), bytes.slice(cut)])) } });
   assert.match(p.app(), /modèl-é-日本/);
+  assert.doesNotMatch(p.app(), /\uFFFD/);
+});
+
+// A response with no body stream (the text() fallback).
+const noStream = (text, status = 200) => ({ ok: status === 200, status, headers: { get: () => null }, text: async () => text });
+
+test("r3-3f: without a body stream the text() fallback is used and still enforces the cap", async () => {
+  const small = JSON.stringify({ files: { "usage.json": { content: JSON.stringify(doc1("fallback-model")) } } });
+  const p = await boot({ hash: "#" + A, gists: { [A]: () => Promise.resolve(noStream(small)) } });
+  assert.match(p.app(), /fallback-model/);
+  const big = JSON.stringify({ files: { "usage.json": { truncated: true, raw_url: RAW + "rawA" }, pad: { content: "x".repeat(11e6) } } });
+  const q = await boot({ hash: "#" + A, gists: { [A]: () => Promise.resolve(noStream(big)) } });
+  assert.match(q.app(), /missing or too large/);
+  const gists = { [A]: () => Promise.resolve(truncatedResp(RAW + "rawA")), rawA: () => Promise.resolve(noStream("x".repeat(4e6 + 1))) };
+  const r = await boot({ hash: "#" + A, gists });
+  assert.match(r.app(), /missing or too large/);
+  assert.equal(r.store.has("gist"), false);
+});
+
+test("r4-5: an API response that is not JSON has its own message", async () => {
+  const p = await boot({ hash: "#" + A, gists: { [A]: () => Promise.resolve(new Response("<html>rate limited</html>")) } });
+  assert.match(p.app(), /The GitHub response is not valid JSON/);
+  assert.doesNotMatch(p.app(), /usage\.json is not valid JSON/);
+  assert.doesNotMatch(p.app(), /rate limited/);
 });
 
 test("r3-5a: a failing raw_url download shows an error and saves nothing", async () => {
@@ -650,4 +675,28 @@ test("r3-5b: the same gist id with a different key is worded as a different key,
   assert.doesNotMatch(p.app(), /different data source/);
   assert.equal(p.app().includes(k1) || p.app().includes(k2), false);
   assert.equal(p.fetched.length, 0);
+});
+
+test("r4-1: the real collector pipeline at its maximum (300 days x 33 models) publishes an envelope the page accepts", async (t) => {
+  const key = newKey(), psm1 = fileURLToPath(new URL("../collector/AiUsage.psm1", import.meta.url));
+  const script = `
+    Import-Module $env:T_MODULE -Force
+    $now = [datetimeoffset]'2026-10-04T12:00:00Z'
+    $b = foreach ($d in 0..299) { $day = ([datetime]'2026-10-04').AddDays(-$d).ToString('yyyy-MM-ddT00:00:00Z')
+      $u = foreach ($m in 1..33) { @{ model = "example-model-$m"; uncached_input_tokens = 123456789; cache_creation_input_tokens = 123456; cache_read_input_tokens = 1234567890; output_tokens = 12345678 } }
+      $c = foreach ($m in 1..33) { foreach ($l in 1..2) { @{ model = "example-model-$m"; amount = '617.28395'; description = "line $l" } } }
+      @{ u = @{ starting_at = $day; results = @($u) }; c = @{ starting_at = $day; results = @($c) } } }
+    $up = @{ data = @($b | % { $_.u }) } | ConvertTo-Json -Depth 6 -Compress | ConvertFrom-Json; $cp = @{ data = @($b | % { $_.c }) } | ConvertTo-Json -Depth 6 -Compress | ConvertFrom-Json
+    $platform = ConvertTo-PlatformSource -UsagePages @($up) -CostPages @($cp) -Now $now
+    $sources = [ordered]@{ platform = $platform }
+    (New-PublishPayload -Sources $sources -Now $now -Key $env:T_KEY).text`;
+  const r = spawnSync("pwsh", ["-NoProfile", "-Command", script], { encoding: "utf8", maxBuffer: 1e8, env: { ...process.env, T_MODULE: psm1, T_KEY: key } });
+  if (r.error?.code === "ENOENT") return t.skip("pwsh is not on PATH");
+  assert.equal(r.status, 0, r.stderr);
+  const text = r.stdout.trim();
+  assert.ok(Buffer.byteLength(text) < 3e6, "envelope bytes " + Buffer.byteLength(text));
+  const p = await boot({ hash: `#${A}.${key}`, gists: { [A]: text } });
+  assert.doesNotMatch(p.app(), /malformed|too large|Could not/);
+  assert.match(p.app(), /example-model-33/);
+  assert.equal(p.store.get("gist"), `${A}.${key}`);
 });

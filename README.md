@@ -35,13 +35,15 @@ Fallback: `-SetAdminKey` prompts for an API key with hidden input and stores it 
 | ChatGPT | `chatgpt.com/backend-api/wham/usage` (undocumented, Codex limits) | `~/.codex/auth.json` |
 | Claude platform | Admin API usage and cost reports | TPM key + federation (or DPAPI-encrypted API key) |
 
+The collector never refreshes login tokens. If one expires, the page keeps the last numbers and says so until you open Claude Code or Codex.
+
 ## Configuration
 
 `~/.config/ai-usage/config.json` accepts an optional `days`: how many days of Claude platform history to fetch. The default is 30 and the maximum is 300 (larger values are capped). The collector reads at most 10 pages of 31 daily buckets (310), and the page rejects data older than 398 days, so 300 is the most that both can carry. A missing, zero, negative or non-numeric value means 30.
 
-The page and the collector agree on size by construction. The collector sums the platform usage and cost lines to one row per (date, model), which is all the page draws. The page accepts up to 10,000 rows per list (400 days x 25 models) and 4 MB of text, so 300 days fits with up to 33 models a day. If a run would produce more rows than the page accepts, the collector reports that error (the page then keeps the last good numbers and shows it) instead of publishing a document the page would reject; lower `days` in that case. Source error text is truncated to 300 characters and credential-shaped text is redacted. The page still accepts the older, un-aggregated shape in gists published earlier.
+The page and the collector agree on size by construction. The collector sums the platform usage and cost lines to one row per (date, model), which is all the page draws, and publishes compact JSON. The page accepts up to 10,000 rows per list, 300 distinct models, 200-character strings and 4 MB of text (the encrypted envelope, which is about a third larger than the JSON inside it). The collector applies the same row, model and string limits, and checks the final published text against 3.5 MB: 300 days with 33 models a day is about 2.2 MB encrypted. When a limit is exceeded the collector publishes an error for the platform source instead of a document the page would reject (the other sources still publish); lower `days` in that case. The page rejects a negative cost, so a (date, model) total that nets below zero (a credit) is published as 0 and counted in the platform source's `floored_credits`. The page still accepts the older, un-aggregated shape in gists published earlier.
 
-The collector never refreshes login tokens. If one expires, the page keeps the last numbers and says so until you open Claude Code or Codex.
+A failed source publishes only a short fixed phrase and the source name (`claude: HTTP 401`, `codex: timeout`, `platform: DNS failure`, `claude: request failed`), never the raw exception text, which could echo a URL, header or response body.
 
 ## Tests
 

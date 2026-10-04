@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'sha256-N1O2MhFp8WNzykjl+LHiO0pYFR1C7RAewoPfKF0O8vc='; connect-src https://api.github.com https://gist.githubusercontent.com; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'sha256-xtEV/tXPl4PPy0W6qxcZ6gql/7kvGjbIyFZZE1MXSOA='; connect-src https://api.github.com https://gist.githubusercontent.com; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'">
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-title" content="AI Usage">
@@ -245,7 +245,7 @@ async function readText(r, max) {
     text += dec.decode(value, { stream: true });
   }
 }
-const parseJson = (t) => { try { return JSON.parse(t); } catch { throw new Error("usage.json is not valid JSON"); } };
+const parseJson = (t, what = "usage.json") => { try { return JSON.parse(t); } catch { throw new Error(what + " is not valid JSON"); } };
 async function open(text, key) {
   if (typeof text !== "string" || text.length > MAX_TEXT) throw new Error("usage.json is missing or too large");
   const doc = parseJson(text);
@@ -375,7 +375,7 @@ async function load(adopt) {
     const r = await fetch("https://api.github.com/gists/" + id, { cache: "no-store", headers: { Accept: "application/vnd.github+json" } });
     if (my !== seq) return;
     if (!r.ok) throw new Error(r.status === 403 ? "GitHub rate limit reached; try again in a few minutes" : "GitHub returned " + r.status);
-    const body = parseJson(await readText(r, MAX_API));
+    const body = parseJson(await readText(r, MAX_API), "The GitHub response");
     if (my !== seq) return;
     const f = body && body.files && body.files["usage.json"];
     if (!f) throw new Error("usage.json is not in the gist yet");
