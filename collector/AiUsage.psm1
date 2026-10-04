@@ -349,6 +349,14 @@ function Get-ReportPages([string]$Url, $Headers) {
     }
 }
 
+# How many days of platform history to fetch (config.json "days"). Default 30, maximum 300: Get-ReportPages
+# reads at most 10 pages of 31 daily buckets (310), and the page rejects rows older than 398 days.
+function Get-CollectDays($Config) {
+    $n = 0
+    if (-not [int]::TryParse([string](Get-Prop $Config 'days'), [ref]$n) -or $n -le 0) { return 30 }
+    [Math]::Min(300, $n)
+}
+
 function Get-PlatformSource([datetimeoffset]$Now, $Headers, [int]$Days) {
     $end = $Now.UtcDateTime.Date.AddDays(1).ToString('yyyy-MM-ddT00:00:00Z')
     $start = $Now.UtcDateTime.Date.AddDays(1 - $Days).ToString('yyyy-MM-ddT00:00:00Z')
@@ -375,7 +383,7 @@ function Invoke-AiUsageCollect {
     $statePath = Join-Path $ConfigDir 'usage.json'
     $prev = if (Test-Path $statePath) { try { (Get-Content -Raw $statePath | ConvertFrom-Json).sources } catch { $null } }
     $now = [datetimeoffset]::UtcNow
-    $days = if (Get-Prop $config 'days') { [int]$config.days } else { 30 }
+    $days = Get-CollectDays $config
     $fetchers = [ordered]@{
         claude   = { Get-ClaudeSource $now }
         codex    = { Get-CodexSource $now }
@@ -394,4 +402,4 @@ function Invoke-AiUsageCollect {
     $json
 }
 
-Export-ModuleMember -Function ConvertTo-*, ConvertFrom-Base64Url, New-UsageKey, Protect-UsageJson, Unprotect-UsageJson, Get-WindowLabel, New-Wif*, Select-PlatformAuth, Get-WifKey, Merge-Source, Select-ClaudeCredential, Get-CodexCredential, Save-AdminKey, Read-AdminKey, Invoke-AiUsageCollect
+Export-ModuleMember -Function ConvertTo-*, ConvertFrom-Base64Url, New-UsageKey, Protect-UsageJson, Unprotect-UsageJson, Get-WindowLabel, New-Wif*, Select-PlatformAuth, Get-WifKey, Merge-Source, Get-CollectDays, Select-ClaudeCredential, Get-CodexCredential, Save-AdminKey, Read-AdminKey, Invoke-AiUsageCollect

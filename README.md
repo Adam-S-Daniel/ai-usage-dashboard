@@ -35,12 +35,16 @@ Fallback: `-SetAdminKey` prompts for an API key with hidden input and stores it 
 | ChatGPT | `chatgpt.com/backend-api/wham/usage` (undocumented, Codex limits) | `~/.codex/auth.json` |
 | Claude platform | Admin API usage and cost reports | TPM key + federation (or DPAPI-encrypted API key) |
 
+## Configuration
+
+`~/.config/ai-usage/config.json` accepts an optional `days`: how many days of Claude platform history to fetch. The default is 30 and the maximum is 300 (larger values are capped). The collector reads at most 10 pages of 31 daily buckets (310), and the page rejects data older than 398 days, so 300 is the most that both can carry. A missing, zero, negative or non-numeric value means 30.
+
 The collector never refreshes login tokens. If one expires, the page keeps the last numbers and says so until you open Claude Code or Codex.
 
 ## Tests
 
     pwsh collector/tests/Run-Tests.ps1
-    node --test tests/    # the page: validation, escaping, saved-id handling, CSP hash
+    node --test tests/*.test.mjs    # the page: validation, escaping, saved-id handling, CSP hash
 
 ## Uninstall
 

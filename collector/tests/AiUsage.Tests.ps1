@@ -246,3 +246,15 @@ Describe 'Usage encryption' {
         $threw | Should -Be $true
     }
 }
+
+Describe 'Get-CollectDays' {
+    It 'defaults to 30 when days is missing, empty, zero, negative or not a number' {
+        foreach ($c in @{}, @{ days = '' }, @{ days = 0 }, @{ days = -5 }, @{ days = 'abc' }) { Get-CollectDays $c | Should -Be 30 }
+    }
+    It 'keeps a sensible value and caps at 300, inside the 310 daily buckets the paging can read' {
+        Get-CollectDays @{ days = 90 } | Should -Be 90
+        Get-CollectDays ([pscustomobject]@{ days = 300 }) | Should -Be 300
+        Get-CollectDays @{ days = 301 } | Should -Be 300
+        Get-CollectDays @{ days = 100000 } | Should -Be 300
+    }
+}
