@@ -246,3 +246,161 @@ Describe 'Usage encryption' {
         $threw | Should -Be $true
     }
 }
+
+Describe 'Get-CollectDays' {
+    It 'defaults to 30 when days is missing, empty, zero, negative or not a number' {
+        foreach ($c in @{}, @{ days = '' }, @{ days = 0 }, @{ days = -5 }, @{ days = 'abc' }) { Get-CollectDays $c | Should -Be 30 }
+    }
+    It 'keeps a sensible value and caps at 300, inside the 310 daily buckets the paging can read' {
+        Get-CollectDays @{ days = 90 } | Should -Be 90
+        Get-CollectDays ([pscustomobject]@{ days = 300 }) | Should -Be 300
+        Get-CollectDays @{ days = 301 } | Should -Be 300
+        Get-CollectDays @{ days = 100000 } | Should -Be 300
+    }
+}
+
+Describe 'ConvertTo-PlatformSource aggregation' {
+    It 'sums rows to one per date and model, as decimals, keeping first-seen order' {
+        $cost = '{"data":[{"starting_at":"2026-10-01T00:00:00Z","results":[' +
+            '{"amount":"0.1","model":"m1","description":"Input"},{"amount":"0.2","model":"m1","description":"Output"},{"amount":"0.2","model":"m1","description":"Cache"},' +
+            '{"amount":"50","model":"m2","description":"Input"}]},{"starting_at":"2026-10-02T00:00:00Z","results":[{"amount":"100","model":"m1"}]}]}' | ConvertFrom-Json
+        $usage = '{"data":[{"starting_at":"2026-10-01T00:00:00Z","results":[{"model":"m1","uncached_input_tokens":1,"cache_read_input_tokens":2,"output_tokens":3},{"model":"m1","uncached_input_tokens":10,"cache_read_input_tokens":20,"output_tokens":30,"cache_creation_input_tokens":4}]}]}' | ConvertFrom-Json
+        $s = ConvertTo-PlatformSource -UsagePages @($usage) -CostPages @($cost) -Now $script:Now
+        $s.costs.Count | Should -Be 3
+        ($s.costs | % { "$($_.date) $($_.model) $($_.usd)" }) -join ';' | Should -Be '2026-10-01 m1 0.005;2026-10-01 m2 0.5;2026-10-02 m1 1'
+        $s.usage.Count | Should -Be 1
+        $s.usage[0].input | Should -Be 11
+        $s.usage[0].cache_read | Should -Be 22
+        $s.usage[0].output | Should -Be 33
+        $s.usage[0].cache_write | Should -Be 4
+    }
+    It 'turns 300 days x 4 models x 5 cost lines into 1200 cost rows' {
+        $buckets = foreach ($d in 0..299) {
+            $day = ([datetime]'2026-01-01').AddDays($d).ToString('yyyy-MM-ddT00:00:00Z')
+            $results = foreach ($m in 1..4) { foreach ($c in 1..5) { @{ amount = '1.5'; model = "example-model-$m"; description = "line $c" } } }
+            @{ starting_at = $day; results = @($results) }
+        }
+        $cost = @{ data = @($buckets) } | ConvertTo-Json -Depth 6 | ConvertFrom-Json
+        $s = ConvertTo-PlatformSource -UsagePages @() -CostPages @($cost) -Now $script:Now
+        $s.ok | Should -Be $true
+        $s.costs.Count | Should -Be 1200
+        $s.costs[0].usd | Should -Be 0.075
+    }
+    It 'reports an error rather than publishing more rows than the page accepts' {
+        $rows = foreach ($i in 1..10001) { @{ date = '2026-10-01'; model = "m$i"; input_tokens = 1; output_tokens = 1 } }
+        $usage = @{ data = @($rows) } | ConvertTo-Json -Depth 4 | ConvertFrom-Json
+        $s = ConvertTo-PlatformSource -UsagePages @($usage) -CostPages @() -Now $script:Now
+        $s.ok | Should -Be $false
+        ($s.error -match 'Too many usage rows') | Should -Be $true
+    }
+}
+
+Describe 'Get-ErrorText' {
+    It 'maps each failure to a short fixed phrase with the source name' {
+        $cases = [ordered]@{
+            'Response status code does not indicate success: 401 (Unauthorized).' = 'claude: HTTP 401'
+            'Response status code does not indicate success: 429 (Too Many Requests).' = 'claude: HTTP 429'
+            'The request was canceled due to the configured HttpClient.Timeout of 30 seconds elapsing.' = 'claude: timeout'
+            'Name or service not known (api.anthropic.com:443)' = 'claude: DNS failure'
+            'No such host is known. (api.anthropic.com:443)' = 'claude: DNS failure'
+            'Connection refused (127.0.0.1:1)' = 'claude: connection refused'
+            'Token exchange failed: Response status code does not indicate success: 400 (Bad Request).' = 'claude: token exchange failed (HTTP 400)'
+            'Token exchange failed: something odd' = 'claude: token exchange failed'
+            'Federation was refused (401). Check the rule (issuer, subject, audience, service account) and the events on the Console.' = 'claude: federation refused (HTTP 401); check the rule and issuer in the Console'
+            'No Claude Code login found. Run `claude` and log in.' = 'claude: no Claude Code login; run claude and log in'
+            'Claude Code token expired. Open Claude Code to renew it.' = 'claude: Claude Code login expired; open Claude Code to renew it'
+            'No Codex ChatGPT login found. Run `codex login`.' = 'claude: no Codex login; run codex login'
+            'Claude platform access is not set up. Run Install.ps1 -SetupWif (or -SetAdminKey).' = 'claude: platform access is not set up; run Install.ps1 -SetupWif'
+            'Could not create a key in the TPM (is the TPM present and enabled?): boom' = 'claude: signing key unavailable'
+            'Bearer token is invalid' = 'claude: request failed'
+            'something unexpected' = 'claude: request failed'
+        }
+        foreach ($m in $cases.Keys) { Get-ErrorText ([Exception]::new($m)) 'claude' | Should -Be $cases[$m] }
+    }
+    It 'prefers the real response status code when the exception carries one' {
+        $ex = [pscustomobject]@{ Message = 'whatever'; Response = [pscustomobject]@{ StatusCode = 503 } }
+        Get-ErrorText $ex 'codex' | Should -Be 'codex: HTTP 503'
+    }
+    It 'never lets any secret shape from the raw message into the output' {
+        $secrets = 'sk-proj-ABCDEF123456', 'sk-OLDSTYLEKEY123456', 'sk-ant-admin01-SECRETVALUE', 'ghp_0123456789abcdefghij', 'github_pat_11ABCDEFG0123456789', 'x-api-key: HEADERSECRET', 'api_key=QUERYSECRET', 'token=TOKENSECRET', 'Authorization: Basic dXNlcjpwYXNz', 'Bearer abc.def.ghi', 'eyJhbGciOiJSUzI1NiJ9.eyJzdWIiOiJ4In0.c2ln'
+        $raw = "GET https://api.example.com/v1/x?api_key=QUERYSECRET&token=TOKENSECRET failed: " + ($secrets -join ' ') + ' ' + ('x' * 5000)
+        $out = Get-ErrorText ([Exception]::new($raw)) 'platform'
+        $out | Should -Be 'platform: request failed'
+        foreach ($s in $secrets) { $out.Contains($s) | Should -Be $false }
+        $out.Length | Should -BeLessThan 100
+    }
+}
+
+Describe 'ConvertTo-PlatformSource robustness' {
+    It 'keeps models that differ only in case apart' {
+        $usage = '{"data":[{"date":"2026-10-01","model":"Model-A","input_tokens":1},{"date":"2026-10-01","model":"model-a","input_tokens":2}]}' | ConvertFrom-Json
+        $cost = '{"data":[{"date":"2026-10-01","model":"Model-A","amount":"100"},{"date":"2026-10-01","model":"model-a","amount":"200"}]}' | ConvertFrom-Json
+        $s = ConvertTo-PlatformSource -UsagePages @($usage) -CostPages @($cost) -Now $script:Now
+        $s.usage.Count | Should -Be 2
+        $s.costs.Count | Should -Be 2
+        ($s.costs | % { $_.usd }) -join ',' | Should -Be '1,2'
+    }
+    It 'floors a net-negative (date, model) cost at 0 and records how many were floored' {
+        $cost = '{"data":[{"date":"2026-10-01","model":"m1","amount":"-500"},{"date":"2026-10-01","model":"m1","amount":"300"},{"date":"2026-10-01","model":"m2","amount":"-100"},{"date":"2026-10-01","model":"m2","amount":"300"}]}' | ConvertFrom-Json
+        $s = ConvertTo-PlatformSource -UsagePages @() -CostPages @($cost) -Now $script:Now
+        ($s.costs | % { "$($_.model)=$($_.usd)" }) -join ',' | Should -Be 'm1=0,m2=2'
+        $s.floored_credits | Should -Be 1
+        ($s.costs | ? { $_.usd -lt 0 }).Count | Should -Be 0
+    }
+    It 'omits floored_credits when nothing was floored' {
+        $cost = '{"data":[{"date":"2026-10-01","model":"m1","amount":"100"}]}' | ConvertFrom-Json
+        (ConvertTo-PlatformSource -UsagePages @() -CostPages @($cost) -Now $script:Now).Contains('floored_credits') | Should -Be $false
+    }
+    It 'reports an error for more than 300 models or a model name over 200 characters' {
+        $rows = foreach ($i in 1..301) { @{ date = '2026-10-01'; model = "m$i"; input_tokens = 1 } }
+        $s = ConvertTo-PlatformSource -UsagePages @(@{ data = @($rows) } | ConvertTo-Json -Depth 4 | ConvertFrom-Json) -CostPages @() -Now $script:Now
+        $s.ok | Should -Be $false
+        ($s.error -match 'Too many models') | Should -Be $true
+        $ok = foreach ($i in 1..300) { @{ date = '2026-10-01'; model = "m$i"; input_tokens = 1 } }
+        (ConvertTo-PlatformSource -UsagePages @(@{ data = @($ok) } | ConvertTo-Json -Depth 4 | ConvertFrom-Json) -CostPages @() -Now $script:Now).ok | Should -Be $true
+        $long = @{ data = @(@{ date = '2026-10-01'; model = ('m' * 201); input_tokens = 1 }) } | ConvertTo-Json -Depth 4 | ConvertFrom-Json
+        $s2 = ConvertTo-PlatformSource -UsagePages @($long) -CostPages @() -Now $script:Now
+        $s2.ok | Should -Be $false
+        ($s2.error -match 'longer than the page accepts') | Should -Be $true
+        $edge = @{ data = @(@{ date = '2026-10-01'; model = ('m' * 200); input_tokens = 1 }) } | ConvertTo-Json -Depth 4 | ConvertFrom-Json
+        (ConvertTo-PlatformSource -UsagePages @($edge) -CostPages @() -Now $script:Now).ok | Should -Be $true
+    }
+}
+
+Describe 'New-PublishPayload' {
+    BeforeAll {
+        $script:Key = New-UsageKey
+        $script:Big = { param($Models, $Days)
+            $usage = New-Object System.Collections.ArrayList; $costs = New-Object System.Collections.ArrayList
+            foreach ($d in 0..($Days - 1)) { $date = ([datetime]'2026-10-04').AddDays(-$d).ToString('yyyy-MM-dd')
+                foreach ($m in 1..$Models) {
+                    [void]$usage.Add([ordered]@{ date = $date; model = "example-model-$m"; input = 123456789; cache_write = 123456; cache_read = 1234567890; output = 12345678 })
+                    [void]$costs.Add([ordered]@{ date = $date; model = "example-model-$m"; usd = 12.3456789 }) } }
+            [ordered]@{ claude = [ordered]@{ ok = $true; plan = 'max'; windows = @() }; platform = [ordered]@{ ok = $true; fetched_at = '2026-10-04T12:00:00Z'; usage = @($usage); costs = @($costs) } }
+        }
+    }
+    It 'publishes compact JSON that decrypts to exactly the stored text' {
+        $p = New-PublishPayload -Sources (& $script:Big 2 3) -Now $script:Now -Key $script:Key
+        ($p.json -match '\n') | Should -Be $false
+        Unprotect-UsageJson -Envelope $p.text -Key $script:Key | Should -Be $p.json
+    }
+    It 'fits 300 days x 33 models inside the page cap, encrypted, with headroom' {
+        $p = New-PublishPayload -Sources (& $script:Big 33 300) -Now $script:Now -Key $script:Key
+        (ConvertFrom-Json $p.json).sources.platform.ok | Should -Be $true
+        [Text.Encoding]::UTF8.GetByteCount($p.text) | Should -BeLessThan 3000000
+    }
+    It 'replaces the platform source with an error when the final text would exceed the limit, keeping the rest' {
+        $p = New-PublishPayload -Sources (& $script:Big 5 20) -Now $script:Now -Key $script:Key -MaxBytes 20000
+        $doc = Unprotect-UsageJson -Envelope $p.text -Key $script:Key | ConvertFrom-Json
+        $doc.sources.platform.ok | Should -Be $false
+        ($doc.sources.platform.error -match 'too much data') | Should -Be $true
+        $doc.sources.claude.plan | Should -Be 'max'
+        [Text.Encoding]::UTF8.GetByteCount($p.text) | Should -BeLessThan 20000
+    }
+    It 'checks the encrypted text, not just the plain JSON' {
+        $plain = New-PublishPayload -Sources (& $script:Big 5 20) -Now $script:Now
+        $len = [Text.Encoding]::UTF8.GetByteCount($plain.text)
+        $enc = New-PublishPayload -Sources (& $script:Big 5 20) -Now $script:Now -Key $script:Key -MaxBytes ($len + 100)
+        (ConvertFrom-Json (Unprotect-UsageJson -Envelope $enc.text -Key $script:Key)).sources.platform.ok | Should -Be $false
+    }
+}

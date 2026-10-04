@@ -85,26 +85,85 @@ function Expand-ReportRows($Pages) {
     }
 }
 
+# The page draws only per-model totals and per-day, per-model costs, so rows are summed to one per (date, model)
+# in each list. The page enforces limits (10000 rows per list, 300 distinct models, 200-character strings,
+# usd >= 0) and this function applies the same ones, reporting an error instead of publishing a document the
+# page would reject. 300 days (the config maximum) fits with up to 33 models a day.
+$script:MaxPlatformRows = 10000
+$script:MaxPlatformModels = 300
+$script:MaxModelChars = 200
+
+# Model names are case-sensitive keys ([ordered]@{} would merge "Model" and "model").
+function New-RowIndex { [System.Collections.Specialized.OrderedDictionary]::new([StringComparer]::Ordinal) }
+
 function ConvertTo-PlatformSource {
     param($UsagePages, $CostPages, [datetimeoffset]$Now)
-    $usage = foreach ($e in Expand-ReportRows $UsagePages) {
+    $usage = New-RowIndex
+    foreach ($e in Expand-ReportRows $UsagePages) {
         $r = $e.row
         $in = Get-Prop $r 'uncached_input_tokens'; if ($null -eq $in) { $in = Get-Prop $r 'input_tokens' }
         $cc = Get-Prop $r 'cache_creation'
         $cw = if ($cc) { [long](Get-Prop $cc 'ephemeral_1h_input_tokens') + [long](Get-Prop $cc 'ephemeral_5m_input_tokens') }
         else { [long](Get-Prop $r 'cache_creation_input_tokens') }
-        [ordered]@{
+        $row = [ordered]@{
             date = $e.date; model = [string](Get-Prop $r 'model'); input = [long]$in; cache_write = $cw
             cache_read = [long](Get-Prop $r 'cache_read_input_tokens'); output = [long](Get-Prop $r 'output_tokens')
         }
+        $k = "$($row.date)|$($row.model)"
+        if ($usage.Contains($k)) { foreach ($f in 'input', 'cache_write', 'cache_read', 'output') { $usage[$k][$f] += $row[$f] } }
+        else { $usage[$k] = $row }
     }
-    $costs = foreach ($e in Expand-ReportRows $CostPages) {
+    $cents = New-RowIndex
+    foreach ($e in Expand-ReportRows $CostPages) {
         $r = $e.row
         $model = Get-Prop $r 'model'; if (-not $model) { $model = Get-Prop $r 'description' }
-        # amount is a decimal string in cents
-        [ordered]@{ date = $e.date; model = [string]$model; usd = [double]([decimal]::Parse([string]$r.amount, [cultureinfo]::InvariantCulture) / 100) }
+        # amount is a decimal string in cents; summed as decimals so the total carries no floating-point noise
+        $c = [decimal]::Parse([string]$r.amount, [cultureinfo]::InvariantCulture)
+        $k = "$($e.date)|$([string]$model)"
+        if ($cents.Contains($k)) { $cents[$k].cents += $c } else { $cents[$k] = @{ date = $e.date; model = [string]$model; cents = $c } }
     }
-    [ordered]@{ ok = $true; fetched_at = ConvertTo-IsoUtc $Now; usage = @($usage); costs = @($costs) }
+    # The page rejects a negative cost, so a (date, model) total below zero (a net credit) is shown as 0 and counted.
+    $floored = 0
+    $costs = foreach ($v in $cents.Values) {
+        if ($v.cents -lt 0) { $floored++; $v.cents = [decimal]0 }
+        [ordered]@{ date = $v.date; model = $v.model; usd = [double]($v.cents / 100) }
+    }
+    $models = [System.Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
+    foreach ($m in @($usage.Values | % { $_.model }) + @($cents.Values | % { $_.model })) { [void]$models.Add($m) }
+    if ($usage.Count -gt $script:MaxPlatformRows -or $cents.Count -gt $script:MaxPlatformRows) {
+        return @{ ok = $false; error = "Too many usage rows for the page ($($usage.Count) usage, $($cents.Count) cost; the limit is $script:MaxPlatformRows). Lower days in config.json." }
+    }
+    if ($models.Count -gt $script:MaxPlatformModels) {
+        return @{ ok = $false; error = "Too many models for the page ($($models.Count); the limit is $script:MaxPlatformModels)." }
+    }
+    if (@($models | ? { $_.Length -gt $script:MaxModelChars }).Count) {
+        return @{ ok = $false; error = "A model name is longer than the page accepts ($script:MaxModelChars characters)." }
+    }
+    $out = [ordered]@{ ok = $true; fetched_at = ConvertTo-IsoUtc $Now; usage = @($usage.Values); costs = @($costs) }
+    if ($floored) { $out.floored_credits = $floored }
+    $out
+}
+
+# A short, fixed vocabulary, never the raw exception text: that text can echo URLs, headers or response bodies
+# on some platforms, and the page has no use for free-form detail. Input is the exception and the source name.
+function Get-ErrorText {
+    param($Exception, [string]$Source)
+    $m = [string]$Exception.Message
+    $code = try { [int]$Exception.Response.StatusCode } catch { 0 }
+    if (-not $code -and $m -match 'status code does not indicate success: (\d{3})') { $code = [int]$Matches[1] }
+    $what = if ($m -like 'Federation was refused (401)*') { 'federation refused (HTTP 401); check the rule and issuer in the Console' }
+    elseif ($m -like 'No Claude Code login found*') { 'no Claude Code login; run claude and log in' }
+    elseif ($m -like 'Claude Code token expired*') { 'Claude Code login expired; open Claude Code to renew it' }
+    elseif ($m -like 'No Codex ChatGPT login found*') { 'no Codex login; run codex login' }
+    elseif ($m -like 'Claude platform access is not set up*') { 'platform access is not set up; run Install.ps1 -SetupWif' }
+    elseif ($m -like 'Token exchange failed*') { if ($code) { "token exchange failed (HTTP $code)" } else { 'token exchange failed' } }
+    elseif ($m -like 'Could not create a key in the TPM*' -or $m -like 'Signing key *' -or $m -like 'The TPM-backed*') { 'signing key unavailable' }
+    elseif ($code) { "HTTP $code" }
+    elseif ($m -match '(?i)timeout|timed out') { 'timeout' }
+    elseif ($m -match '(?i)name or service not known|no such host|nodename nor servname|temporary failure in name resolution') { 'DNS failure' }
+    elseif ($m -match '(?i)refused') { 'connection refused' }
+    else { 'request failed' }
+    "${Source}: $what"
 }
 
 function Merge-Source {
@@ -349,6 +408,14 @@ function Get-ReportPages([string]$Url, $Headers) {
     }
 }
 
+# How many days of platform history to fetch (config.json "days"). Default 30, maximum 300: Get-ReportPages
+# reads at most 10 pages of 31 daily buckets (310), and the page rejects rows older than 398 days.
+function Get-CollectDays($Config) {
+    $n = 0
+    if (-not [int]::TryParse([string](Get-Prop $Config 'days'), [ref]$n) -or $n -le 0) { return 30 }
+    [Math]::Min(300, $n)
+}
+
 function Get-PlatformSource([datetimeoffset]$Now, $Headers, [int]$Days) {
     $end = $Now.UtcDateTime.Date.AddDays(1).ToString('yyyy-MM-ddT00:00:00Z')
     $start = $Now.UtcDateTime.Date.AddDays(1 - $Days).ToString('yyyy-MM-ddT00:00:00Z')
@@ -369,13 +436,32 @@ function Publish-Gist([string]$GistId, [string]$Json) {
     finally { Remove-Item -LiteralPath $tmp -ErrorAction SilentlyContinue }
 }
 
+# What gets published, after encryption: compact JSON, at most 3.5 MB (the page refuses 4 MB; encryption adds a third).
+# If it is too big the platform source is replaced by an error so the limits still publish, never a document the page rejects.
+$script:MaxPublishBytes = 3500000
+
+function New-PublishPayload {
+    param($Sources, [datetimeoffset]$Now, [string]$Key, [int]$MaxBytes = $script:MaxPublishBytes)
+    $build = {
+        $j = [ordered]@{ schema = 1; generated_at = ConvertTo-IsoUtc $Now; host = [Environment]::MachineName; sources = $Sources } | ConvertTo-Json -Depth 8 -Compress
+        @{ json = $j; text = $(if ($Key) { Protect-UsageJson -Json $j -Key $Key } else { $j }) }
+    }
+    $r = & $build
+    if ([Text.Encoding]::UTF8.GetByteCount($r.text) -gt $MaxBytes) {
+        $Sources['platform'] = [ordered]@{ ok = $false; error = 'platform: too much data for the page; lower days in config.json' }
+        $r = & $build
+        if ([Text.Encoding]::UTF8.GetByteCount($r.text) -gt $MaxBytes) { throw 'The usage document is too large for the page.' }
+    }
+    $r
+}
+
 function Invoke-AiUsageCollect {
     param([string]$ConfigDir = (Join-Path $HOME '.config/ai-usage'), [switch]$NoPublish)
     $config = Get-Content -Raw (Join-Path $ConfigDir 'config.json') | ConvertFrom-Json
     $statePath = Join-Path $ConfigDir 'usage.json'
     $prev = if (Test-Path $statePath) { try { (Get-Content -Raw $statePath | ConvertFrom-Json).sources } catch { $null } }
     $now = [datetimeoffset]::UtcNow
-    $days = if (Get-Prop $config 'days') { [int]$config.days } else { 30 }
+    $days = Get-CollectDays $config
     $fetchers = [ordered]@{
         claude   = { Get-ClaudeSource $now }
         codex    = { Get-CodexSource $now }
@@ -383,15 +469,14 @@ function Invoke-AiUsageCollect {
     }
     $sources = [ordered]@{}
     foreach ($name in $fetchers.Keys) {
-        $result = try { & $fetchers[$name] } catch { @{ ok = $false; error = $_.Exception.Message } }
+        $result = try { & $fetchers[$name] } catch { @{ ok = $false; error = Get-ErrorText $_.Exception $name } }
         $sources[$name] = Merge-Source -Previous (Get-Prop $prev $name) -Result $result
     }
-    $json = [ordered]@{ schema = 1; generated_at = ConvertTo-IsoUtc $now; host = [Environment]::MachineName; sources = $sources } | ConvertTo-Json -Depth 8
-    Set-Content -LiteralPath $statePath -Value $json -Encoding utf8
     # Encrypted when the install has a key; an older install keeps publishing plaintext until Install.ps1 reruns.
-    $key = Get-Prop $config 'key'
-    if (-not $NoPublish) { Publish-Gist -GistId $config.gistId -Json $(if ($key) { Protect-UsageJson -Json $json -Key $key } else { $json }) }
-    $json
+    $payload = New-PublishPayload -Sources $sources -Now $now -Key (Get-Prop $config 'key')
+    Set-Content -LiteralPath $statePath -Value $payload.json -Encoding utf8
+    if (-not $NoPublish) { Publish-Gist -GistId $config.gistId -Json $payload.text }
+    $payload.json
 }
 
-Export-ModuleMember -Function ConvertTo-*, ConvertFrom-Base64Url, New-UsageKey, Protect-UsageJson, Unprotect-UsageJson, Get-WindowLabel, New-Wif*, Select-PlatformAuth, Get-WifKey, Merge-Source, Select-ClaudeCredential, Get-CodexCredential, Save-AdminKey, Read-AdminKey, Invoke-AiUsageCollect
+Export-ModuleMember -Function ConvertTo-*, ConvertFrom-Base64Url, New-UsageKey, Protect-UsageJson, Unprotect-UsageJson, Get-WindowLabel, New-Wif*, Select-PlatformAuth, Get-WifKey, Merge-Source, Get-ErrorText, New-PublishPayload, Get-CollectDays, Select-ClaudeCredential, Get-CodexCredential, Save-AdminKey, Read-AdminKey, Invoke-AiUsageCollect
