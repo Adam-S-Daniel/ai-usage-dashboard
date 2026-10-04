@@ -54,6 +54,8 @@ The local `~/.config/ai-usage/usage.json` is plaintext compact JSON followed by 
 
 [CI](.github/workflows/ci.yml) runs both suites on Ubuntu for pull requests and pushes to `main`, with `node-test` and `pester` intended as required checks. Changes outside each suite's salient paths report success without running that suite. The workflow policy test uses `ConvertFrom-Yaml`: CI installs the pinned `powershell-yaml` 0.4.12 module before Pester and fails if the parser is unavailable. Locally, when the module is absent, only the workflow policy assertions are visibly skipped.
 
+The jobs and their steps omit `timeout-minutes` because GitHub reports timed-out jobs as cancelled, which can block a required check.
+
 ## Uninstall
 
     Unregister-ScheduledTask AiUsageCollector

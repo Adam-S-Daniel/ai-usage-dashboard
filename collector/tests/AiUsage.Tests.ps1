@@ -462,9 +462,10 @@ Describe 'CI workflow' {
         foreach ($id in @('node-test', 'pester')) {
             $job = $ci.jobs[$id]
             $job.Contains('concurrency') | Should -Be $false
-            ($job['timeout-minutes'] -gt 0) | Should -Be $true
+            $job.Contains('timeout-minutes') | Should -Be $false
             $job['runs-on'] | Should -Be 'ubuntu-latest'
             foreach ($step in $job.steps) {
+                $step.Contains('timeout-minutes') | Should -Be $false
                 if ($step.Contains('uses')) {
                     ($step.uses -match '@[0-9a-f]{40}$') | Should -Be $true
                     if ($step.uses.StartsWith('actions/checkout@')) {
