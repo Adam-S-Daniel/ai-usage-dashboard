@@ -438,3 +438,41 @@ Describe 'New-PublishPayload' {
         (ConvertFrom-Json (Unprotect-UsageJson -Envelope $enc.text -Key $script:Key)).sources.platform.ok | Should -Be $false
     }
 }
+
+Describe 'CI workflow' {
+    It 'keeps both required checks available and pins every action' {
+        if (-not (Get-Command ConvertFrom-Yaml -ErrorAction SilentlyContinue)) {
+            if (Get-Command Set-ItResult -ErrorAction SilentlyContinue) { Set-ItResult -Skipped -Because 'No YAML parser is installed; no dependency is added.' }
+            else { Write-Host '  YAML policy assertions skipped: no YAML parser is installed.' }
+            return
+        }
+        $ci = Get-Content -Raw "$PSScriptRoot/../../.github/workflows/ci.yml" | ConvertFrom-Yaml
+        (@($ci.jobs.Keys | Sort-Object) -join ',') | Should -Be 'node-test,pester'
+        $ci.on.Contains('pull_request') | Should -Be $true
+        (@($ci.on.push.branches) -join ',') | Should -Be 'main'
+        $ci.Contains('concurrency') | Should -Be $false
+        $ci.permissions.contents | Should -Be 'read'
+        foreach ($event in @('pull_request', 'push')) {
+            if ($null -ne $ci.on[$event]) {
+                $ci.on[$event].Contains('paths') | Should -Be $false
+                $ci.on[$event].Contains('paths-ignore') | Should -Be $false
+            }
+        }
+        foreach ($id in @('node-test', 'pester')) {
+            $job = $ci.jobs[$id]
+            $job.Contains('concurrency') | Should -Be $false
+            ($job['timeout-minutes'] -gt 0) | Should -Be $true
+            $job['runs-on'] | Should -Be 'ubuntu-latest'
+            foreach ($step in $job.steps) {
+                if ($step.Contains('uses')) {
+                    ($step.uses -match '@[0-9a-f]{40}$') | Should -Be $true
+                    if ($step.uses.StartsWith('actions/checkout@')) {
+                        $step.with['persist-credentials'] | Should -Be $false
+                    }
+                }
+            }
+            $command = if ($id -eq 'node-test') { 'node --test tests/*.test.mjs' } else { 'pwsh -NoProfile -File collector/tests/Run-Tests.ps1' }
+            @($job.steps | Where-Object { $_.run -eq $command }).Count | Should -Be 1
+        }
+    }
+}

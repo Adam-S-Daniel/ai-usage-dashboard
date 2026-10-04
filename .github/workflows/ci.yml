@@ -1,0 +1,106 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  node-test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - name: Detect salient changes
+        id: changes
+        shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          PR_BASE: ${{ github.event.pull_request.base.sha }}
+          PR_HEAD: ${{ github.event.pull_request.head.sha }}
+          PUSH_BASE: ${{ github.event.before }}
+          PUSH_HEAD: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          base="$PUSH_BASE"
+          head="$PUSH_HEAD"
+          if [[ "$EVENT_NAME" == pull_request ]]; then
+            base="$PR_BASE"
+            head="$PR_HEAD"
+          fi
+          run=true
+          if [[ "$base" =~ ^[0-9a-f]{40}$ && "$head" =~ ^[0-9a-f]{40}$ ]] &&
+             git cat-file -e "$base^{commit}" 2>/dev/null &&
+             git cat-file -e "$head^{commit}" 2>/dev/null; then
+            if git diff --name-only -z "$base" "$head" > "$RUNNER_TEMP/changed-paths"; then
+              run=false
+              while IFS= read -r -d '' path; do
+                case "$path" in
+                  index.html|tests/*|collector/AiUsage.psm1|.github/workflows/ci.yml) run=true; break ;;
+                esac
+              done < "$RUNNER_TEMP/changed-paths"
+            fi
+          fi
+          printf 'run=%s\n' "$run" >> "$GITHUB_OUTPUT"
+      - name: No salient changes
+        if: steps.changes.outputs.run != 'true'
+        run: echo 'No relevant changes; required check succeeds.'
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        if: steps.changes.outputs.run == 'true'
+        with:
+          node-version: '24'
+      - name: Run tests
+        if: steps.changes.outputs.run == 'true'
+        run: node --test tests/*.test.mjs
+
+  pester:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - name: Detect salient changes
+        id: changes
+        shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          PR_BASE: ${{ github.event.pull_request.base.sha }}
+          PR_HEAD: ${{ github.event.pull_request.head.sha }}
+          PUSH_BASE: ${{ github.event.before }}
+          PUSH_HEAD: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          base="$PUSH_BASE"
+          head="$PUSH_HEAD"
+          if [[ "$EVENT_NAME" == pull_request ]]; then
+            base="$PR_BASE"
+            head="$PR_HEAD"
+          fi
+          run=true
+          if [[ "$base" =~ ^[0-9a-f]{40}$ && "$head" =~ ^[0-9a-f]{40}$ ]] &&
+             git cat-file -e "$base^{commit}" 2>/dev/null &&
+             git cat-file -e "$head^{commit}" 2>/dev/null; then
+            if git diff --name-only -z "$base" "$head" > "$RUNNER_TEMP/changed-paths"; then
+              run=false
+              while IFS= read -r -d '' path; do
+                case "$path" in
+                  collector/AiUsage.psm1|collector/tests/*|.github/workflows/ci.yml) run=true; break ;;
+                esac
+              done < "$RUNNER_TEMP/changed-paths"
+            fi
+          fi
+          printf 'run=%s\n' "$run" >> "$GITHUB_OUTPUT"
+      - name: No salient changes
+        if: steps.changes.outputs.run != 'true'
+        run: echo 'No relevant changes; required check succeeds.'
+      - name: Run tests
+        if: steps.changes.outputs.run == 'true'
+        run: pwsh -NoProfile -File collector/tests/Run-Tests.ps1

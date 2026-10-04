@@ -45,10 +45,14 @@ The page and the collector agree on size by construction. The collector sums the
 
 A failed source publishes only a short fixed phrase and the source name (`claude: HTTP 401`, `codex: timeout`, `platform: DNS failure`, `claude: request failed`), never the raw exception text, which could echo a URL, header or response body.
 
-## Tests
+The local `~/.config/ai-usage/usage.json` is plaintext compact JSON followed by a newline. The collector and installer read it with `Get-Content -Raw | ConvertFrom-Json`, which accepts compact and pretty JSON. The gist receives compact JSON encrypted in an envelope when a key is configured.
 
-    pwsh collector/tests/Run-Tests.ps1
-    node --test tests/*.test.mjs    # the page: validation, escaping, saved-id handling, CSP hash
+## Tests and CI
+
+    node --test tests/*.test.mjs
+    pwsh -NoProfile -File collector/tests/Run-Tests.ps1
+
+[CI](.github/workflows/ci.yml) runs both suites on Ubuntu for pull requests and pushes to `main`, with `node-test` and `pester` intended as required checks. Changes outside each suite's salient paths report success without running that suite. The workflow policy test uses `ConvertFrom-Yaml` when installed and explicitly skips those assertions otherwise; no parser dependency is added.
 
 ## Uninstall
 
