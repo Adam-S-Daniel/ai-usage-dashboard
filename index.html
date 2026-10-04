@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'sha256-2hynPM33LvqKs5ZYYI6MDL5Qne7EpaphbGPgfLEv5sk='; connect-src https://api.github.com https://gist.githubusercontent.com; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'sha256-GM3iWk/vHK6Oq5bgZRXM1VxvHkfVmBeZVlaMhegsxgs='; connect-src https://api.github.com https://gist.githubusercontent.com; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'">
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-title" content="AI Usage">
@@ -69,8 +69,9 @@ const $ = (s) => document.querySelector(s);
 const esc = (s) => String(s ?? "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
 const fmtTok = (n) => n >= 1e9 ? (n / 1e9).toFixed(2) + "B" : n >= 1e6 ? (n / 1e6).toFixed(1) + "M" : n >= 1e3 ? (n / 1e3).toFixed(1) + "k" : String(n);
 const fmtUsd = (n) => "$" + n.toFixed(2);
-const STALE_MIN = 12;
-let data = null, err = null, choice = null; // choice: fragment id awaiting the user's decision
+const STALE_MIN = 12, DAY = 864e5, MAX_DAYS = 400;
+const ID = /^[0-9a-f]{20,40}$/i;
+let data = null, dataId = null, err = null, choice = null, seq = 0; // choice: fragment id awaiting the user's decision
 
 function dur(ms) {
   const m = Math.max(0, Math.round(ms / 60000));
@@ -127,7 +128,7 @@ function limitCard(title, src, now) {
 function platformCard(src) {
   let body = "";
   if (src && src.usage) {
-    const models = {};
+    const models = Object.create(null); // keyed by gist-supplied strings: no prototype to hit
     const add = (m) => (models[m] ||= { input: 0, cache_write: 0, cache_read: 0, output: 0, usd: 0 });
     src.usage.forEach((r) => { const m = add(r.model); for (const k of ["input", "cache_write", "cache_read", "output"]) m[k] += r[k]; });
     (src.costs || []).forEach((c) => (add(c.model).usd += c.usd));
@@ -136,15 +137,17 @@ function platformCard(src) {
     // Color follows the model (top 5 by cost, rest folded into Other).
     const top = names.filter((n) => models[n].usd > 0).slice(0, 5);
     const slot = (n) => (top.includes(n) ? top.indexOf(n) : 5);
-    const days = {};
+    const days = Object.create(null);
     (src.costs || []).forEach((c) => { const d = (days[c.date] ||= [0, 0, 0, 0, 0, 0]); d[slot(c.model)] += c.usd; });
     const dates = Object.keys(days).sort();
     const today = new Date().toISOString().slice(0, 10);
     body += `<div class="row" style="margin-top:8px"><span class="sub">Cost, last ${dates.length || 0} days with spend</span><span class="big">${fmtUsd(total)}</span></div>`;
     if (dates.length) {
-      const first = new Date(dates[0] + "T00:00:00Z"), n = Math.round((new Date(today + "T00:00:00Z") - first) / 864e5) + 1;
-      const all = Array.from({ length: Math.max(n, 1) }, (_, i) => new Date(first.getTime() + i * 864e5).toISOString().slice(0, 10));
-      const max = Math.max(...all.map((d) => (days[d] || []).reduce((a, b) => a + b, 0)), 0.01);
+      // At most MAX_DAYS days ending today (or the latest dated row), whatever the data says.
+      const t0 = Date.parse(dates[0] + "T00:00:00Z"), t1 = Math.max(Date.parse(today + "T00:00:00Z"), Date.parse(dates[dates.length - 1] + "T00:00:00Z"));
+      const n = Math.min(MAX_DAYS, Math.round((t1 - t0) / DAY) + 1) || 1, start = t1 - (n - 1) * DAY;
+      const all = Array.from({ length: n }, (_, i) => new Date(start + i * DAY).toISOString().slice(0, 10));
+      const max = all.reduce((m, d) => Math.max(m, (days[d] || []).reduce((a, b) => a + b, 0)), 0.01);
       const W = 640, H = 190, L = 52, B = 22, step = (W - L) / all.length, bw = Math.max(2, Math.min(24, step - 2));
       let g = "";
       for (const f of [0, 0.5, 1]) { const y = (H - B) * (1 - f) + 4; g += `<line x1="${L}" x2="${W}" y1="${y}" y2="${y}" stroke="var(--grid)"/><text x="${L - 4}" y="${y + 6}" text-anchor="end">$${(max * f).toFixed(max < 10 ? 2 : 0)}</text>`; }
@@ -153,7 +156,7 @@ function platformCard(src) {
         (days[d] || []).forEach((v, k) => { if (v <= 0) return; const h = Math.max(1, (v / max) * (H - B)); y -= h; g += `<rect x="${x}" y="${y}" width="${bw}" height="${Math.max(1, h - 2)}" rx="2" fill="var(--s${k + 1})"/>`; });
         g += `<rect class="hit" data-d="${esc(d)}" x="${L + i * step}" y="0" width="${step}" height="${H}" fill="transparent"/>`;
       });
-      g += `<text x="${L}" y="${H + 4}">${esc(dates[0].slice(5))}</text><text x="${W}" y="${H + 4}" text-anchor="end">${esc(today.slice(5))}</text>`;
+      g += `<text x="${L}" y="${H + 4}">${esc(all[0].slice(5))}</text><text x="${W}" y="${H + 4}" text-anchor="end">${esc(all[all.length - 1].slice(5))}</text>`;
       body += `<svg viewBox="0 -12 ${W} ${H + 18}" role="img" aria-label="Daily cost by model">${g}</svg><div id="detail">Tap a day for its breakdown.</div>`;
       const legend = top.concat(names.some((n) => !top.includes(n) && models[n].usd > 0) ? ["Other"] : []);
       body += `<div class="key">${legend.map((n) => `<span><span class="sw" style="background:var(--s${n === "Other" ? 6 : top.indexOf(n) + 1})"></span>${esc(n)}</span>`).join("")}</div>`;
@@ -164,6 +167,16 @@ function platformCard(src) {
       (names.length ? "" : `<tr><td colspan="6">No API usage in this period.</td></tr>`) + `</table></div>`;
   }
   return `<section class="card"><h2>Claude platform (API)</h2>${srcNote(src)}${body}</section>`;
+}
+
+// A render failure must not leave a blank page: drop the data and show an error state.
+function show() {
+  try { render(); return true; }
+  catch (e) {
+    data = null; dataId = null; err = "Could not display the data: " + (e && e.message);
+    try { render(); } catch { $("#app").textContent = err; }
+    return false;
+  }
 }
 
 function render() {
@@ -199,8 +212,9 @@ document.addEventListener("click", (e) => {
 });
 
 const isDemo = () => location.hash === "#demo";
-const fragId = () => { const h = location.hash.slice(1); return /^[0-9a-f]{20,40}$/i.test(h) ? h : null; };
-function saved() { try { return localStorage.getItem("gist"); } catch { return null; } }
+const fragId = () => { const h = location.hash.slice(1); return ID.test(h) ? h : null; };
+// localStorage on *.github.io is shared with the account's other Pages sites: trust nothing in it.
+function saved() { try { const v = localStorage.getItem("gist"); return ID.test(v) ? v : null; } catch { return null; } }
 const gistId = () => fragId() || saved();
 
 // Reject, never coerce: the page renders only a document that passed this.
@@ -210,13 +224,22 @@ function validateUsage(doc) {
   const num = (v) => typeof v === "number" && isFinite(v);
   const str = (v) => typeof v === "string";
   const when = (v) => str(v) && isFinite(Date.parse(v));
-  // Within 400 days before / 2 days after generation: bounds the chart's day loop.
-  const day = (v) => { const t = str(v) && /^\d{4}-\d{2}-\d{2}$/.test(v) ? Date.parse(v + "T00:00:00Z") : NaN; const g = Date.parse(doc.generated_at); return t >= g - 400 * 864e5 && t <= g + 2 * 864e5; };
+  // Bounded against this device's clock, never against the document's own claims:
+  // generated_at within 5 years back and 1 day ahead; row dates are real calendar days
+  // inside the chart's MAX_DAYS window (ending tomorrow, to allow clock skew).
+  const now = Date.now(), today = Math.floor(now / DAY) * DAY;
+  const recent = (v) => when(v) && Date.parse(v) >= now - 5 * 365 * DAY && Date.parse(v) <= now + DAY;
+  const day = (v) => {
+    if (!str(v) || !/^\d{4}-\d{2}-\d{2}$/.test(v)) return false;
+    const t = Date.parse(v + "T00:00:00Z");
+    if (!isFinite(t) || new Date(t).toISOString().slice(0, 10) !== v) return false; // 2026-02-31 is not a day
+    return t >= today - (MAX_DAYS - 2) * DAY && t <= today + DAY;
+  };
   const need = (ok, p) => { if (!ok) bad(p); };
   const opt = (v, ok, p) => { if (v != null) need(ok(v), p); };
   const list = (v, p, row) => { if (v == null) return; need(Array.isArray(v), p); v.forEach((x, i) => { need(obj(x), `${p}[${i}]`); row(x, `${p}[${i}]`); }); };
   need(obj(doc), "(document)");
-  need(when(doc.generated_at), "generated_at");
+  need(recent(doc.generated_at), "generated_at");
   opt(doc.host, str, "host");
   need(obj(doc.sources), "sources");
   const src = (name, body) => {
@@ -271,33 +294,42 @@ function demo() {
     platform: { ok: true, usage, costs } } };
 }
 
+// Each call supersedes earlier ones: a response that arrives after a newer load began is dropped.
 async function load(adopt) {
-  if (isDemo()) { data = validateUsage(demo()); err = null; return render(); }
-  // A fragment id is only a candidate: it is saved after its gist loaded and validated.
-  const frag = fragId(), old = saved();
-  if (frag && old && frag !== old && adopt !== frag) { choice = frag; return render(); }
+  const my = ++seq;
   choice = null;
+  $("#refresh").disabled = false;
+  if (isDemo()) { data = validateUsage(demo()); dataId = "#demo"; err = null; return show(); }
+  // A fragment id is only a candidate: it is saved after its gist loaded, validated and rendered.
+  const frag = fragId(), old = saved();
+  if (frag && old && frag !== old && adopt !== frag) { choice = frag; return show(); }
   const id = frag || old;
-  if (!id) return render();
+  if (id !== dataId) { data = null; dataId = null; } // never show one gist's data under another id
+  if (!id) return show();
   $("#refresh").disabled = true;
+  let ok = false;
   try {
     const r = await fetch("https://api.github.com/gists/" + id, { cache: "no-store", headers: { Accept: "application/vnd.github+json" } });
+    if (my !== seq) return;
     if (!r.ok) throw new Error(r.status === 403 ? "GitHub rate limit reached; try again in a few minutes" : "GitHub returned " + r.status);
-    const f = (await r.json()).files["usage.json"];
+    const body = await r.json();
+    if (my !== seq) return;
+    const f = body.files["usage.json"];
     if (!f) throw new Error("usage.json is not in the gist yet");
     const text = f.truncated ? await (await fetch(f.raw_url, { cache: "no-store" })).text() : f.content;
-    data = validateUsage(JSON.parse(text)); err = null;
-    if (frag && frag !== old) try { localStorage.setItem("gist", frag); } catch {}
-  } catch (e) { err = e.message; }
+    if (my !== seq) return;
+    data = validateUsage(JSON.parse(text)); dataId = id; err = null; ok = true;
+  } catch (e) { if (my !== seq) return; err = e.message; }
   $("#refresh").disabled = false;
-  render();
+  // Save only after the page has actually rendered this gist.
+  if (show() && ok && frag && frag !== old) try { localStorage.setItem("gist", frag); } catch {}
 }
 
 $("#refresh").addEventListener("click", load);
 addEventListener("hashchange", load);
 document.addEventListener("visibilitychange", () => { if (!document.hidden) load(); });
 setInterval(() => { if (!document.hidden) load(); }, 120000);   // re-read the gist every 2 min
-setInterval(() => { if (!document.hidden && data) render(); }, 30000); // keep elapsed time moving
+setInterval(() => { if (!document.hidden && data) show(); }, 30000); // keep elapsed time moving
 load();
 </script>
 </body>
