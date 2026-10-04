@@ -437,19 +437,24 @@ function Publish-Gist([string]$GistId, [string]$Json) {
 }
 
 # What gets published, after encryption: compact JSON, at most 3.5 MB (the page refuses 4 MB; encryption adds a third).
-# If it is too big the platform source is replaced by an error so the limits still publish, never a document the page rejects.
+# If it is too big, keep the previous platform rows with an error when they fit; otherwise publish only the error.
 $script:MaxPublishBytes = 3500000
 
 function New-PublishPayload {
-    param($Sources, [datetimeoffset]$Now, [string]$Key, [int]$MaxBytes = $script:MaxPublishBytes)
+    param($Sources, [datetimeoffset]$Now, [string]$Key, [int]$MaxBytes = $script:MaxPublishBytes, $PreviousPlatform)
     $build = {
         $j = [ordered]@{ schema = 1; generated_at = ConvertTo-IsoUtc $Now; host = [Environment]::MachineName; sources = $Sources } | ConvertTo-Json -Depth 8 -Compress
         @{ json = $j; text = $(if ($Key) { Protect-UsageJson -Json $j -Key $Key } else { $j }) }
     }
     $r = & $build
     if ([Text.Encoding]::UTF8.GetByteCount($r.text) -gt $MaxBytes) {
-        $Sources['platform'] = [ordered]@{ ok = $false; error = 'platform: too much data for the page; lower days in config.json' }
+        $errorSource = [ordered]@{ ok = $false; error = 'platform: too much data for the page; lower days in config.json' }
+        $Sources['platform'] = Merge-Source -Previous $PreviousPlatform -Result $errorSource
         $r = & $build
+        if ([Text.Encoding]::UTF8.GetByteCount($r.text) -gt $MaxBytes) {
+            $Sources['platform'] = $errorSource
+            $r = & $build
+        }
         if ([Text.Encoding]::UTF8.GetByteCount($r.text) -gt $MaxBytes) { throw 'The usage document is too large for the page.' }
     }
     $r
@@ -473,7 +478,7 @@ function Invoke-AiUsageCollect {
         $sources[$name] = Merge-Source -Previous (Get-Prop $prev $name) -Result $result
     }
     # Encrypted when the install has a key; an older install keeps publishing plaintext until Install.ps1 reruns.
-    $payload = New-PublishPayload -Sources $sources -Now $now -Key (Get-Prop $config 'key')
+    $payload = New-PublishPayload -Sources $sources -Now $now -Key (Get-Prop $config 'key') -PreviousPlatform (Get-Prop $prev 'platform')
     Set-Content -LiteralPath $statePath -Value $payload.json -Encoding utf8
     if (-not $NoPublish) { Publish-Gist -GistId $config.gistId -Json $payload.text }
     $payload.json

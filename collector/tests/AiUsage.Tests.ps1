@@ -397,6 +397,40 @@ Describe 'New-PublishPayload' {
         $doc.sources.claude.plan | Should -Be 'max'
         [Text.Encoding]::UTF8.GetByteCount($p.text) | Should -BeLessThan 20000
     }
+    It 'keeps earlier platform rows when a size error and the previous snapshot fit' {
+        foreach ($key in @('', $script:Key)) {
+            $previous = (& $script:Big 2 3).platform
+            $previous.fetched_at = '2026-10-01T12:00:00Z'
+            $before = $previous | ConvertTo-Json -Depth 8 -Compress
+            $p = New-PublishPayload -Sources (& $script:Big 5 20) -PreviousPlatform $previous -Now $script:Now -Key $key -MaxBytes 10000
+            $doc = $p.json | ConvertFrom-Json
+            $doc.sources.platform.ok | Should -Be $false
+            ($p.json.Contains('"fetched_at":"2026-10-01T12:00:00Z"')) | Should -Be $true
+            ($doc.sources.platform.usage | ConvertTo-Json -Depth 8 -Compress) | Should -Be ($previous.usage | ConvertTo-Json -Depth 8 -Compress)
+            ($doc.sources.platform.costs | ConvertTo-Json -Depth 8 -Compress) | Should -Be ($previous.costs | ConvertTo-Json -Depth 8 -Compress)
+            ($doc.sources.platform.error -match 'too much data') | Should -Be $true
+            $doc.sources.claude.plan | Should -Be 'max'
+            ([Text.Encoding]::UTF8.GetByteCount($p.text) -le 10000) | Should -Be $true
+            ($previous | ConvertTo-Json -Depth 8 -Compress) | Should -Be $before
+            if ($key) { Unprotect-UsageJson -Envelope $p.text -Key $key | Should -Be $p.json }
+        }
+    }
+    It 'drops even the earlier platform rows when they cannot fit with the size error' {
+        foreach ($key in @('', $script:Key)) {
+            $previous = (& $script:Big 5 20).platform
+            $before = $previous | ConvertTo-Json -Depth 8 -Compress
+            $p = New-PublishPayload -Sources (& $script:Big 5 20) -PreviousPlatform $previous -Now $script:Now -Key $key -MaxBytes 10000
+            $doc = $p.json | ConvertFrom-Json
+            $doc.sources.platform.ok | Should -Be $false
+            $doc.sources.platform.usage | Should -Be $null
+            $doc.sources.platform.costs | Should -Be $null
+            ($doc.sources.platform.error -match 'too much data') | Should -Be $true
+            $doc.sources.claude.plan | Should -Be 'max'
+            ([Text.Encoding]::UTF8.GetByteCount($p.text) -le 10000) | Should -Be $true
+            ($previous | ConvertTo-Json -Depth 8 -Compress) | Should -Be $before
+            if ($key) { Unprotect-UsageJson -Envelope $p.text -Key $key | Should -Be $p.json }
+        }
+    }
     It 'checks the encrypted text, not just the plain JSON' {
         $plain = New-PublishPayload -Sources (& $script:Big 5 20) -Now $script:Now
         $len = [Text.Encoding]::UTF8.GetByteCount($plain.text)
