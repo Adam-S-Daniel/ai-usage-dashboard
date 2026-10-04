@@ -36,6 +36,7 @@ The collector never refreshes login tokens. If one expires, the page keeps the l
 ## Tests
 
     pwsh collector/tests/Run-Tests.ps1
+    node --test tests/    # the page: validation, escaping, saved-id handling, CSP hash
 
 ## Uninstall
 

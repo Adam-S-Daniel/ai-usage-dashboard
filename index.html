@@ -2,6 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'sha256-2hynPM33LvqKs5ZYYI6MDL5Qne7EpaphbGPgfLEv5sk='; connect-src https://api.github.com https://gist.githubusercontent.com; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'">
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-title" content="AI Usage">
@@ -69,7 +70,7 @@ const esc = (s) => String(s ?? "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<
 const fmtTok = (n) => n >= 1e9 ? (n / 1e9).toFixed(2) + "B" : n >= 1e6 ? (n / 1e6).toFixed(1) + "M" : n >= 1e3 ? (n / 1e3).toFixed(1) + "k" : String(n);
 const fmtUsd = (n) => "$" + n.toFixed(2);
 const STALE_MIN = 12;
-let data = null, err = null;
+let data = null, err = null, choice = null; // choice: fragment id awaiting the user's decision
 
 function dur(ms) {
   const m = Math.max(0, Math.round(ms / 60000));
@@ -150,9 +151,9 @@ function platformCard(src) {
       all.forEach((d, i) => {
         const x = L + i * step + (step - bw) / 2; let y = H - B + 4;
         (days[d] || []).forEach((v, k) => { if (v <= 0) return; const h = Math.max(1, (v / max) * (H - B)); y -= h; g += `<rect x="${x}" y="${y}" width="${bw}" height="${Math.max(1, h - 2)}" rx="2" fill="var(--s${k + 1})"/>`; });
-        g += `<rect class="hit" data-d="${d}" x="${L + i * step}" y="0" width="${step}" height="${H}" fill="transparent"/>`;
+        g += `<rect class="hit" data-d="${esc(d)}" x="${L + i * step}" y="0" width="${step}" height="${H}" fill="transparent"/>`;
       });
-      g += `<text x="${L}" y="${H + 4}">${dates[0].slice(5)}</text><text x="${W}" y="${H + 4}" text-anchor="end">${today.slice(5)}</text>`;
+      g += `<text x="${L}" y="${H + 4}">${esc(dates[0].slice(5))}</text><text x="${W}" y="${H + 4}" text-anchor="end">${esc(today.slice(5))}</text>`;
       body += `<svg viewBox="0 -12 ${W} ${H + 18}" role="img" aria-label="Daily cost by model">${g}</svg><div id="detail">Tap a day for its breakdown.</div>`;
       const legend = top.concat(names.some((n) => !top.includes(n) && models[n].usd > 0) ? ["Other"] : []);
       body += `<div class="key">${legend.map((n) => `<span><span class="sw" style="background:var(--s${n === "Other" ? 6 : top.indexOf(n) + 1})"></span>${esc(n)}</span>`).join("")}</div>`;
@@ -170,6 +171,13 @@ function render() {
   if (!gistId() && !isDemo()) {
     $("#updated").textContent = "Not set up";
     app.innerHTML = `<section class="card"><h2>Setup</h2><p class="sub">Run <code>collector/Install.ps1</code> on your laptop, then open the link it prints (this page with <code>#&lt;gist id&gt;</code> at the end). The id is remembered on this device. Add <code>#demo</code> to preview with sample data.</p></section>`;
+    return;
+  }
+  if (choice) {
+    $("#updated").textContent = "Choose a data source";
+    app.innerHTML = `<section class="card banner"><h2>Different data source</h2><p class="sub">This link points at a different data source (<code>${esc(choice)}</code>) than the one saved on this device (<code>${esc(saved())}</code>). Only use the new link if you trust where it came from.</p><div class="row"><button id="keep">Keep the saved one</button><button id="adopt">Use the new link</button></div></section>`;
+    $("#adopt").addEventListener("click", () => load(choice));
+    $("#keep").addEventListener("click", () => { history.replaceState(null, "", location.pathname + location.search); load(); });
     return;
   }
   if (!data) { app.innerHTML = err ? `<section class="card banner"><h2>Could not load data</h2><div class="sub">${esc(err)}</div></section>` : ""; if (err) $("#updated").textContent = "Error"; return; }
@@ -191,10 +199,57 @@ document.addEventListener("click", (e) => {
 });
 
 const isDemo = () => location.hash === "#demo";
-function gistId() {
-  const h = location.hash.slice(1);
-  if (/^[0-9a-f]{20,40}$/i.test(h)) { try { localStorage.setItem("gist", h); } catch {} return h; }
-  try { return localStorage.getItem("gist"); } catch { return null; }
+const fragId = () => { const h = location.hash.slice(1); return /^[0-9a-f]{20,40}$/i.test(h) ? h : null; };
+function saved() { try { return localStorage.getItem("gist"); } catch { return null; } }
+const gistId = () => fragId() || saved();
+
+// Reject, never coerce: the page renders only a document that passed this.
+function validateUsage(doc) {
+  const bad = (p) => { throw new Error("usage.json is malformed: " + p); };
+  const obj = (v) => v !== null && typeof v === "object" && !Array.isArray(v);
+  const num = (v) => typeof v === "number" && isFinite(v);
+  const str = (v) => typeof v === "string";
+  const when = (v) => str(v) && isFinite(Date.parse(v));
+  // Within 400 days before / 2 days after generation: bounds the chart's day loop.
+  const day = (v) => { const t = str(v) && /^\d{4}-\d{2}-\d{2}$/.test(v) ? Date.parse(v + "T00:00:00Z") : NaN; const g = Date.parse(doc.generated_at); return t >= g - 400 * 864e5 && t <= g + 2 * 864e5; };
+  const need = (ok, p) => { if (!ok) bad(p); };
+  const opt = (v, ok, p) => { if (v != null) need(ok(v), p); };
+  const list = (v, p, row) => { if (v == null) return; need(Array.isArray(v), p); v.forEach((x, i) => { need(obj(x), `${p}[${i}]`); row(x, `${p}[${i}]`); }); };
+  need(obj(doc), "(document)");
+  need(when(doc.generated_at), "generated_at");
+  opt(doc.host, str, "host");
+  need(obj(doc.sources), "sources");
+  const src = (name, body) => {
+    const s = doc.sources[name], p = "sources." + name;
+    if (s == null) return;
+    need(obj(s), p);
+    need(typeof s.ok === "boolean", p + ".ok");
+    opt(s.error, str, p + ".error");
+    opt(s.fetched_at, when, p + ".fetched_at");
+    body(s, p);
+  };
+  for (const name of ["claude", "codex"]) src(name, (s, p) => {
+    opt(s.plan, str, p + ".plan");
+    list(s.windows, p + ".windows", (w, q) => {
+      need(str(w.label), q + ".label");
+      need(num(w.used_pct), q + ".used_pct");
+      opt(w.resets_at, when, q + ".resets_at");
+      need(num(w.period_seconds) && w.period_seconds > 0, q + ".period_seconds");
+    });
+  });
+  src("platform", (s, p) => {
+    list(s.usage, p + ".usage", (r, q) => {
+      need(day(r.date), q + ".date");
+      need(str(r.model), q + ".model");
+      for (const k of ["input", "cache_write", "cache_read", "output"]) need(num(r[k]) && r[k] >= 0, `${q}.${k}`);
+    });
+    list(s.costs, p + ".costs", (c, q) => {
+      need(day(c.date), q + ".date");
+      need(str(c.model), q + ".model");
+      need(num(c.usd), q + ".usd");
+    });
+  });
+  return doc;
 }
 
 function demo() {
@@ -216,9 +271,13 @@ function demo() {
     platform: { ok: true, usage, costs } } };
 }
 
-async function load() {
-  const id = gistId();
-  if (isDemo()) { data = demo(); err = null; return render(); }
+async function load(adopt) {
+  if (isDemo()) { data = validateUsage(demo()); err = null; return render(); }
+  // A fragment id is only a candidate: it is saved after its gist loaded and validated.
+  const frag = fragId(), old = saved();
+  if (frag && old && frag !== old && adopt !== frag) { choice = frag; return render(); }
+  choice = null;
+  const id = frag || old;
   if (!id) return render();
   $("#refresh").disabled = true;
   try {
@@ -227,7 +286,8 @@ async function load() {
     const f = (await r.json()).files["usage.json"];
     if (!f) throw new Error("usage.json is not in the gist yet");
     const text = f.truncated ? await (await fetch(f.raw_url, { cache: "no-store" })).text() : f.content;
-    data = JSON.parse(text); err = null;
+    data = validateUsage(JSON.parse(text)); err = null;
+    if (frag && frag !== old) try { localStorage.setItem("gist", frag); } catch {}
   } catch (e) { err = e.message; }
   $("#refresh").disabled = false;
   render();
