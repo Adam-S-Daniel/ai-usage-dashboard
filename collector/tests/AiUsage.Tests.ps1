@@ -5,7 +5,7 @@ BeforeAll {
 
 Describe 'ConvertTo-ClaudeSource' {
     It 'maps session and weekly windows and skips null ones' {
-        $resp = '{"five_hour":{"utilization":42.5,"resets_at":"2026-10-02T15:00:00+00:00"},"seven_day":{"utilization":10,"resets_at":"2026-10-06T00:00:00Z"},"seven_day_opus":null}' | ConvertFrom-Json
+        $resp = '{"five_hour":{"utilization":42.5,"resets_at":"2026-10-02T15:00:00+00:00"},"seven_day":{"utilization":10,"resets_at":"2026-10-06T00:00:00Z"},"seven_day_opus":null,"seven_day_sonnet":null}' | ConvertFrom-Json
         $s = ConvertTo-ClaudeSource -Response $resp -Plan 'max' -Now $script:Now
         $s.ok | Should -Be $true
         $s.plan | Should -Be 'max'
@@ -16,6 +16,23 @@ Describe 'ConvertTo-ClaudeSource' {
         $s.windows[0].resets_at | Should -Be '2026-10-02T15:00:00Z'
         $s.windows[0].period_seconds | Should -Be 18000
         $s.windows[1].period_seconds | Should -Be 604800
+    }
+    It 'adds the model-specific weekly window from limits and ignores session and weekly_all entries' {
+        $resp = '{"five_hour":{"utilization":3,"resets_at":"2026-10-08T19:10:00Z"},"seven_day":{"utilization":64,"resets_at":"2026-10-12T17:00:00Z"},"limits":[{"kind":"session","group":"session","percent":3,"resets_at":"2026-10-08T19:10:00.232181+00:00","scope":null},{"kind":"weekly_all","group":"weekly","percent":64,"resets_at":"2026-10-12T17:00:00.232216+00:00","scope":null},{"kind":"weekly_scoped","group":"weekly","percent":1,"resets_at":"2026-10-12T17:00:00.232506+00:00","scope":{"model":{"id":null,"display_name":"Fable"},"surface":null}}]}' | ConvertFrom-Json
+        $s = ConvertTo-ClaudeSource -Response $resp -Plan 'max' -Now $script:Now
+        $s.windows.Count | Should -Be 3
+        $s.windows[0].id | Should -Be 'five_hour'
+        $s.windows[1].id | Should -Be 'seven_day'
+        $s.windows[2].id | Should -Be 'seven_day_fable'
+        $s.windows[2].label | Should -Be 'Week, Fable'
+        $s.windows[2].used_pct | Should -Be 1
+        $s.windows[2].resets_at | Should -Be '2026-10-12T17:00:00Z'
+        $s.windows[2].period_seconds | Should -Be 604800
+    }
+    It 'skips a weekly_scoped entry with no model name or percent' {
+        $resp = '{"limits":[{"kind":"weekly_scoped","percent":5,"scope":null},{"kind":"weekly_scoped","percent":5,"scope":{"model":{"display_name":null}}},{"kind":"weekly_scoped","percent":null,"scope":{"model":{"display_name":"Fable"}}}]}' | ConvertFrom-Json
+        $s = ConvertTo-ClaudeSource -Response $resp -Plan 'max' -Now $script:Now
+        $s.windows.Count | Should -Be 0
     }
     It 'keeps a window with no reset time (no active session)' {
         $resp = '{"five_hour":{"utilization":0,"resets_at":null}}' | ConvertFrom-Json

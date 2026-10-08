@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'sha256-0M73Qz+ekRh9RJfFsDIlQzUte9Vd5ecexcwopVxFZjs='; connect-src https://api.github.com https://gist.githubusercontent.com; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'sha256-uQyKi6Lr6rhOwFqsFIGD6FZWWJ3m2vqGp+g7ytPwHl4='; connect-src https://api.github.com https://gist.githubusercontent.com; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'">
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-title" content="AI Usage">
@@ -341,7 +341,7 @@ function demo() {
     claude: { ok: true, plan: "max", windows: [
       { label: "Session (5 h)", used_pct: 62, resets_at: iso(2.6 * H), period_seconds: 18000 },
       { label: "Week, all models", used_pct: 31, resets_at: iso(74 * H), period_seconds: 604800 },
-      { label: "Week, Opus", used_pct: 71, resets_at: iso(74 * H), period_seconds: 604800 }] },
+      { label: "Week, Fable", used_pct: 71, resets_at: iso(74 * H), period_seconds: 604800 }] },
     codex: { ok: false, error: "Sample of a failed fetch", fetched_at: iso(-3 * H), plan: "plus", windows: [
       { label: "Session (5 h)", used_pct: 8, resets_at: iso(1 * H), period_seconds: 18000 },
       { label: "Week", used_pct: 96, resets_at: iso(20 * H), period_seconds: 604800 }] },

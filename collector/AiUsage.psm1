@@ -24,8 +24,6 @@ function ConvertTo-ClaudeSource {
     $defs = @(
         @{ id = 'five_hour'; label = 'Session (5 h)'; period = 18000 }
         @{ id = 'seven_day'; label = 'Week, all models'; period = 604800 }
-        @{ id = 'seven_day_opus'; label = 'Week, Opus'; period = 604800 }
-        @{ id = 'seven_day_sonnet'; label = 'Week, Sonnet'; period = 604800 }
     )
     $windows = foreach ($d in $defs) {
         $w = Get-Prop $Response $d.id
@@ -37,7 +35,19 @@ function ConvertTo-ClaudeSource {
             resets_at = ConvertTo-IsoUtc (Get-Prop $w 'resets_at'); period_seconds = $d.period
         }
     }
-    [ordered]@{ ok = $true; fetched_at = ConvertTo-IsoUtc $Now; plan = $Plan; windows = @($windows) }
+    # The model-specific weekly limit (Fable) is not a top-level key; it only appears in `limits`.
+    # session and weekly_all entries repeat five_hour and seven_day, so only weekly_scoped adds a window.
+    $scoped = foreach ($l in @(Get-Prop $Response 'limits')) {
+        if ((Get-Prop $l 'kind') -ne 'weekly_scoped') { continue }
+        $name = [string](Get-Prop (Get-Prop (Get-Prop $l 'scope') 'model') 'display_name')
+        $pct = Get-Prop $l 'percent'
+        if (-not $name -or $null -eq $pct) { continue }
+        [ordered]@{
+            id = 'seven_day_' + ($name.ToLowerInvariant() -replace '[^a-z0-9]', '_'); label = "Week, $name"; used_pct = [double]$pct
+            resets_at = ConvertTo-IsoUtc (Get-Prop $l 'resets_at'); period_seconds = 604800
+        }
+    }
+    [ordered]@{ ok = $true; fetched_at = ConvertTo-IsoUtc $Now; plan = $Plan; windows = @($windows) + @($scoped) }
 }
 
 function Get-WindowLabel([long]$Seconds) {
