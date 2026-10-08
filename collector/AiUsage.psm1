@@ -47,7 +47,24 @@ function ConvertTo-ClaudeSource {
             resets_at = ConvertTo-IsoUtc (Get-Prop $l 'resets_at'); period_seconds = 604800
         }
     }
-    [ordered]@{ ok = $true; fetched_at = ConvertTo-IsoUtc $Now; plan = $Plan; windows = @($windows) + @($scoped) }
+    # Any other top-level object shaped like a window (utilization plus resets_at) is shown by its raw key, for information
+    # only: it has no known period, so it stays out of `windows`. Null ones are unused; extra_usage has no resets_at.
+    $other = foreach ($p in $Response.PSObject.Properties) {
+        $v = $p.Value
+        if ($v -isnot [pscustomobject] -or $defs.id -contains $p.Name) { continue }
+        if (-not $v.PSObject.Properties['utilization'] -or -not $v.PSObject.Properties['resets_at']) { continue }
+        $u = Get-Prop $v 'utilization'
+        if ($null -eq $u) { continue }
+        $usd = { param($n) $x = Get-Prop $v $n; if ($null -eq $x) { $null } else { [double]$x } }
+        $lock = Get-Prop $v 'locked_reason'
+        [ordered]@{
+            id = $p.Name; label = $p.Name; used_pct = [double]$u
+            resets_at = ConvertTo-IsoUtc (Get-Prop $v 'resets_at')
+            limit_usd = & $usd 'limit_dollars'; used_usd = & $usd 'used_dollars'; remaining_usd = & $usd 'remaining_dollars'
+            locked_reason = $(if ($null -eq $lock) { $null } else { [string]$lock })
+        }
+    }
+    [ordered]@{ ok = $true; fetched_at = ConvertTo-IsoUtc $Now; plan = $Plan; windows = @($windows) + @($scoped); other = @($other) }
 }
 
 function Get-WindowLabel([long]$Seconds) {

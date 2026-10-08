@@ -700,3 +700,44 @@ test("r4-1: the real collector pipeline at its maximum (300 days x 33 models) pu
   assert.match(p.app(), /example-model-33/);
   assert.equal(p.store.get("gist"), `${A}.${key}`);
 });
+
+test("other: codename limits validate when present and when absent, and bad entries are rejected", async () => {
+  const entry = () => ({ id: "iguana_necktie", label: "iguana_necktie", used_pct: 100, resets_at: iso(36e5), limit_usd: 250, used_usd: 250.29, remaining_usd: 0, locked_reason: null });
+  const withOther = validDoc();
+  withOther.sources.claude.other = [entry(), { ...entry(), id: "x", label: "x", limit_usd: null, used_usd: null, remaining_usd: null, resets_at: null }];
+  const ok = await boot({ hash: "#" + A, gists: { [A]: withOther } });
+  assert.doesNotMatch(ok.app(), /malformed/);
+  assert.match(ok.app(), /Other limits \(codenames\)/);
+  assert.match(ok.app(), /<code>iguana_necktie<\/code>/);
+  assert.match(ok.app(), /\$250\.29 of \$250\.00 \(\$0\.00 left\)/);
+  const without = await boot({ hash: "#" + A, gists: { [A]: validDoc() } });
+  assert.doesNotMatch(without.app(), /malformed|Other limits/);
+  const bads = [
+    ["used_pct", (e) => (e.used_pct = "100")],
+    ["label", (e) => (e.label = "l".repeat(201))],
+    ["limit_usd", (e) => (e.limit_usd = "250")],
+    ["resets_at", (e) => (e.resets_at = "not a date")],
+    ["locked_reason", (e) => (e.locked_reason = 5)],
+  ];
+  for (const [name, mutate] of bads) {
+    const doc = validDoc(), e = entry();
+    mutate(e);
+    doc.sources.claude.other = [e];
+    const p = await boot({ hash: "#" + A, gists: { [A]: doc } });
+    assert.match(p.app(), new RegExp("malformed: .*other\\[0\\]\\." + name), name);
+    assert.equal(p.store.has("gist"), false);
+  }
+  const many = validDoc();
+  many.sources.claude.other = Array.from({ length: 41 }, entry);
+  assert.match((await boot({ hash: "#" + A, gists: { [A]: many } })).app(), /malformed: .*claude\.other/);
+});
+
+test("other: a hostile codename label is rendered as text", async () => {
+  const x = "<img src=x onerror=alert(1)>";
+  const doc = validDoc();
+  doc.sources.claude.other = [{ id: x, label: x, used_pct: 5, resets_at: null, limit_usd: null, used_usd: null, remaining_usd: null, locked_reason: x }];
+  const p = await boot({ hash: "#" + A, gists: { [A]: doc } });
+  assert.doesNotMatch(p.app(), /malformed/);
+  assert.ok(p.app().includes("&lt;img src=x onerror=alert(1)&gt;"));
+  assert.doesNotMatch(p.app(), /<img/);
+});

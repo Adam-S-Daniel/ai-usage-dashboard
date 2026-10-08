@@ -40,6 +40,28 @@ Describe 'ConvertTo-ClaudeSource' {
         $s.windows.Count | Should -Be 1
         $s.windows[0].resets_at | Should -Be $null
     }
+    It 'lists window-shaped codename limits with data in other, by raw key, and keeps them out of windows' {
+        $resp = '{"five_hour":{"utilization":3,"resets_at":"2026-10-08T19:10:00Z","limit_dollars":null,"used_dollars":null,"remaining_dollars":null,"locked_reason":null},"seven_day":{"utilization":64,"resets_at":"2026-10-12T17:00:00Z","limit_dollars":null,"used_dollars":null,"remaining_dollars":null,"locked_reason":null},"seven_day_oauth_apps":null,"seven_day_opus":null,"seven_day_sonnet":null,"seven_day_cowork":null,"tangelo":null,"iguana_necktie":{"utilization":100.0,"resets_at":"2026-11-05T07:59:00+00:00","limit_dollars":250,"used_dollars":250.287303,"remaining_dollars":0.0,"locked_reason":null},"amber_gauge":null,"extra_usage":{"is_enabled":true,"utilization":5.5},"spend":{"used":1},"limits":[{"kind":"weekly_scoped","group":"weekly","percent":1,"resets_at":"2026-10-12T17:00:00.232506+00:00","scope":{"model":{"id":null,"display_name":"Fable"},"surface":null}}],"seven_day_breakdown":{"a":1},"member_dashboard_available":true}' | ConvertFrom-Json
+        $s = ConvertTo-ClaudeSource -Response $resp -Plan 'max' -Now $script:Now
+        $s.windows.Count | Should -Be 3
+        $s.windows[0].id | Should -Be 'five_hour'
+        $s.windows[1].id | Should -Be 'seven_day'
+        $s.windows[2].id | Should -Be 'seven_day_fable'
+        $s.other.Count | Should -Be 1
+        $s.other[0].id | Should -Be 'iguana_necktie'
+        $s.other[0].label | Should -Be 'iguana_necktie'
+        $s.other[0].used_pct | Should -Be 100
+        $s.other[0].resets_at | Should -Be '2026-11-05T07:59:00Z'
+        $s.other[0].limit_usd | Should -Be 250
+        $s.other[0].used_usd | Should -Be 250.287303
+        $s.other[0].remaining_usd | Should -Be 0
+        $s.other[0].locked_reason | Should -Be $null
+    }
+    It 'returns an empty other list when the response has no extra limits' {
+        $resp = '{"five_hour":{"utilization":3,"resets_at":"2026-10-08T19:10:00Z"},"seven_day":{"utilization":64,"resets_at":"2026-10-12T17:00:00Z"},"tangelo":null,"extra_usage":{"utilization":5.5}}' | ConvertFrom-Json
+        $s = ConvertTo-ClaudeSource -Response $resp -Plan 'max' -Now $script:Now
+        $s.other.Count | Should -Be 0
+    }
 }
 
 Describe 'ConvertTo-CodexSource' {

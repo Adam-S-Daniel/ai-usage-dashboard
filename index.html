@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'sha256-uQyKi6Lr6rhOwFqsFIGD6FZWWJ3m2vqGp+g7ytPwHl4='; connect-src https://api.github.com https://gist.githubusercontent.com; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'sha256-NN9YJgT6OlXaM1jr++NVhldLNn7ihkWtdXIN8yoS+I4='; connect-src https://api.github.com https://gist.githubusercontent.com; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'">
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-title" content="AI Usage">
@@ -53,6 +53,8 @@ th,td{text-align:right;padding:5px 6px;border-bottom:1px solid var(--grid);white
 th:first-child,td:first-child{text-align:left}
 th{color:var(--ink2);font-weight:500}
 code{font-size:13px;word-break:break-all}
+.other{margin-top:14px;border-top:1px solid var(--grid);padding-top:8px}
+.other .bar{height:8px}
 </style>
 </head>
 <body>
@@ -74,7 +76,7 @@ const STALE_MIN = 12, DAY = 864e5, MAX_DAYS = 400;
 // MAX_ROWS is 400 days x 25 models: the collector aggregates to one row per (date, model) per list and refuses to
 // publish more than MAX_ROWS, so what it publishes (at most 300 days) always passes. MAX_TEXT is the real size limit.
 // The gist API response also lists up to thousands of revisions (the collector writes every 5 minutes), hence MAX_API.
-const MAX_TEXT = 4e6, MAX_API = 1e7, MAX_ROWS = 10000, MAX_WINDOWS = 20, MAX_MODELS = 300, MAX_STR = 200, MAX_ERR = 1000, MAX_NUM = 1e15;
+const MAX_TEXT = 4e6, MAX_API = 1e7, MAX_ROWS = 10000, MAX_WINDOWS = 20, MAX_OTHER = 40, MAX_MODELS = 300, MAX_STR = 200, MAX_ERR = 1000, MAX_NUM = 1e15;
 let data = null, lastRef = null, adopted = null, err = null, choice = null, seq = 0; // choice: fragment (id or id.key) awaiting the user's decision
 
 function dur(ms) {
@@ -115,6 +117,17 @@ function meter(w, now) {
     <div class="row sub"><span>${sub}</span>${pace}</div></div>`;
 }
 
+// Informational only: limits the API reports under internal codenames. No period is known, so no pace or elapsed marker.
+function otherLimit(o, now) {
+  const used = Math.max(0, Math.min(100, o.used_pct));
+  const reset = !o.resets_at ? "No active window" : new Date(o.resets_at).getTime() <= now ? "Window has reset" : `resets in ${dur(new Date(o.resets_at).getTime() - now)}`;
+  const usd = o.used_usd != null && o.limit_usd != null ? ` · ${fmtUsd(o.used_usd)} of ${fmtUsd(o.limit_usd)}${o.remaining_usd != null ? ` (${fmtUsd(o.remaining_usd)} left)` : ""}` : "";
+  const lock = o.locked_reason != null ? ` · ${esc(o.locked_reason)}` : "";
+  return `<div class="meter"><div class="row"><code>${esc(o.label)}</code><span class="big">${used.toFixed(0)}%</span></div>
+    <div class="bar" role="img" aria-label="${used.toFixed(0)}% used"><div class="fill" style="width:${used}%"></div></div>
+    <div class="sub">${reset}${usd}${lock}</div></div>`;
+}
+
 function srcNote(src) {
   if (!src) return `<div class="sub">No data yet.</div>`;
   if (src.ok) return "";
@@ -122,11 +135,12 @@ function srcNote(src) {
   return `<div class="sub warn">▲ ${esc(src.error)}${when}</div>`;
 }
 
-function limitCard(title, src, now) {
+function limitCard(title, src, now, other) {
   const plan = src && src.plan ? ` <span class="sub">${esc(src.plan)}</span>` : "";
   const meters = src && src.windows ? src.windows.map((w) => meter(w, now)).join("") : "";
   const key = meters ? `<div class="key"><span><span class="sw" style="background:var(--used)"></span>Used</span><span><span class="sw line"></span>Period elapsed</span></div>` : "";
-  return `<section class="card"><h2>${title}${plan}</h2>${srcNote(src)}${meters}${key}</section>`;
+  const extra = other && src && src.other && src.other.length ? `<div class="other"><div class="sub">Other limits (codenames)</div>${src.other.map((o) => otherLimit(o, now)).join("")}</div>` : "";
+  return `<section class="card"><h2>${title}${plan}</h2>${srcNote(src)}${meters}${key}${extra}</section>`;
 }
 
 function platformCard(src) {
@@ -207,7 +221,7 @@ function render() {
   app.innerHTML =
     (err ? `<section class="card banner"><div class="sub warn">▲ Refresh failed: ${esc(err)}</div></section>` : "") +
     (stale ? `<section class="card banner"><div class="sub warn">▲ No update in ${dur(age)}. The laptop may be asleep or offline.</div></section>` : "") +
-    limitCard("Claude", s.claude, now) + limitCard("ChatGPT (Codex limits)", s.codex, now) + platformCard(s.platform);
+    limitCard("Claude", s.claude, now, true) + limitCard("ChatGPT (Codex limits)", s.codex, now) + platformCard(s.platform);
 }
 
 document.addEventListener("click", (e) => {
@@ -311,6 +325,15 @@ function validateUsage(doc) {
       opt(w.resets_at, when, q + ".resets_at");
       need(num(w.period_seconds) && w.period_seconds > 0, q + ".period_seconds");
     });
+    // Optional: older documents lack it. Codename limits shown for information; they have no period.
+    list(s.other, p + ".other", MAX_OTHER, (o, q) => {
+      need(str(o.id), q + ".id");
+      need(str(o.label), q + ".label");
+      need(num(o.used_pct), q + ".used_pct");
+      opt(o.resets_at, when, q + ".resets_at");
+      for (const f of ["limit_usd", "used_usd", "remaining_usd"]) opt(o[f], num, q + "." + f);
+      opt(o.locked_reason, str, q + ".locked_reason");
+    });
   });
   src("platform", (s, p) => {
     const models = new Set();
@@ -341,7 +364,10 @@ function demo() {
     claude: { ok: true, plan: "max", windows: [
       { label: "Session (5 h)", used_pct: 62, resets_at: iso(2.6 * H), period_seconds: 18000 },
       { label: "Week, all models", used_pct: 31, resets_at: iso(74 * H), period_seconds: 604800 },
-      { label: "Week, Fable", used_pct: 71, resets_at: iso(74 * H), period_seconds: 604800 }] },
+      { label: "Week, Fable", used_pct: 71, resets_at: iso(74 * H), period_seconds: 604800 }],
+      other: [
+        { id: "iguana_necktie", label: "iguana_necktie", used_pct: 100, resets_at: iso(600 * H), limit_usd: 250, used_usd: 250.29, remaining_usd: 0, locked_reason: null },
+        { id: "sample_codename", label: "sample_codename", used_pct: 12, resets_at: iso(30 * H), limit_usd: null, used_usd: null, remaining_usd: null, locked_reason: null }] },
     codex: { ok: false, error: "Sample of a failed fetch", fetched_at: iso(-3 * H), plan: "plus", windows: [
       { label: "Session (5 h)", used_pct: 8, resets_at: iso(1 * H), period_seconds: 18000 },
       { label: "Week", used_pct: 96, resets_at: iso(20 * H), period_seconds: 604800 }] },
