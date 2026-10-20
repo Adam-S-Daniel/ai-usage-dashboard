@@ -527,10 +527,14 @@ Describe 'CI workflow' {
                 $step.Contains('timeout-minutes') | Should -Be $false
                 if ($step.Contains('uses')) {
                     if (-not ($step.uses.StartsWith('./') -or $step.uses.StartsWith('$/') -or $step.uses.StartsWith('docker://'))) {
-                        $lock.dependencies.Contains($step.uses) | Should -Be $true -Because "$($step.uses) needs an actions.lock entry"
-                        $lock.dependencies[$step.uses].commit | Should -MatchExactly '^sha1-[0-9a-f]{40}$'
-                        $lock.dependencies[$step.uses].ref | Should -BeExactly $step.uses.Split('@', 2)[1]
-                        @($lock.workflows['.github/workflows/ci.yml']) | Should -Contain $step.uses
+                        # actions.lock lowercases owner/repo; the tag after '@' keeps its case.
+                        $at = $step.uses.LastIndexOf('@')
+                        $useParts = @($step.uses.Substring(0, $at), $step.uses.Substring($at + 1))
+                        $lockKey = $useParts[0].ToLowerInvariant() + '@' + $useParts[1]
+                        $lock.dependencies.Contains($lockKey) | Should -Be $true -Because "$($step.uses) needs an actions.lock entry"
+                        $lock.dependencies[$lockKey].commit | Should -MatchExactly '^sha1-[0-9a-f]{40}$'
+                        $lock.dependencies[$lockKey].ref | Should -BeExactly $useParts[1]
+                        @($lock.workflows['.github/workflows/ci.yml']) | Should -Contain $lockKey
                     }
                     if ($step.uses.StartsWith('actions/checkout@')) {
                         $step.with['persist-credentials'] | Should -Be $false
@@ -552,26 +556,9 @@ Describe 'CI workflow' {
 
         $verifySteps = @($ci.jobs.pester.steps | Where-Object { $_.name -eq 'Verify action lockfile' })
         $verifySteps.Count | Should -Be 1
-        $verifySteps[0]['if'] | Should -Be "steps.changes.outputs.run == 'true'"
-        $verifySteps[0].env.GH_TOKEN | Should -Be '${{ github.token }}'
+        $verifySteps[0].uses | Should -MatchExactly '^Adam-S-Daniel/verify-actions-lock@v\d+\.\d+\.\d+$'
+        $verifySteps[0].Contains('if') | Should -Be $false
         $verifySteps[0].Contains('continue-on-error') | Should -Be $false
-        $verifyLines = @($verifySteps[0].run -split "`n")
-        $verifyLines -ccontains 'set -euo pipefail' | Should -Be $true
-        $verifyLines -ccontains 'out=$(gh actions-lock --verify --no-interactive --json=valid,findings) || rc=$?' | Should -Be $true
-        $verifyLines -ccontains "if [[ `"`$rc`" -ne 0 ]] || ! jq -e '.valid == true and (.findings | length) == 0' <<<`"`$out`" >/dev/null; then" | Should -Be $true
-        $verifyLines -ccontains '  exit 1' | Should -Be $true
-        $verifyLines -ccontains '  echo "::error::gh actions-lock --verify failed (exit $rc)."' | Should -Be $true
-        $verifyLines -ccontains @'
-  if jq -e 'type == "object"' <<<"$out" >/dev/null 2>&1; then
-'@ | Should -Be $true
-        $verifyLines -ccontains @'
-    jq -r 'def esc: tostring | gsub("%"; "%25") | gsub("\r"; "%0D") | gsub("\n"; "%0A"); .findings[]? | "::error::actions.lock \(.category | esc): \(.dependency // .workflow // "-" | esc): \(.detail | esc)"' <<<"$out"
-'@ | Should -Be $true
-        $verifyLines -ccontains "    echo '::error::gh actions-lock --verify returned no readable JSON.'" | Should -Be $true
-        $verifyLines -ccontains 'gh release download v0.2.0 -R github/gh-actions-lock -p linux-amd64 -O "$ext/gh-actions-lock"' | Should -Be $true
-        $verifyLines -ccontains 'echo "79ec84c191667fd935a277e6fd3662cf5d3669cccc9e99998731d8f306f373b6  $ext/gh-actions-lock" | sha256sum -c -' | Should -Be $true
-        $verifyLines -ccontains '(cd "$ext" && gh extension install .)' | Should -Be $true
-        @($verifyLines | Where-Object { $_ -cmatch 'gh extension install github/' }).Count | Should -Be 0
 
         $parserSteps = @($ci.jobs.pester.steps | Where-Object { $_.name -eq 'Install YAML parser' })
         $parserSteps.Count | Should -Be 1
