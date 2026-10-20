@@ -526,7 +526,10 @@ Describe 'CI workflow' {
             @($job.steps | Where-Object { $_.run -eq $command }).Count | Should -Be 1
         }
 
-        $ci.jobs.pester.steps[1].run | Should -Match '(?m)^\s*[^)]*\|\.github/workflows/\*\) run=true; break ;;$'
+        $pesterDetect = @($ci.jobs.pester.steps | Where-Object { $_.name -eq 'Detect salient changes' })
+        $pesterDetect[0].run | Should -Match '(?m)^\s*[^)]*\|\.github/workflows/\*\) run=true; break ;;$'
+        $nodeDetect = @($ci.jobs['node-test'].steps | Where-Object { $_.name -eq 'Detect salient changes' })
+        $nodeDetect[0].run | Should -Match '(?m)^\s*[^)]*\|\.github/workflows/actions\.lock[|)][^\n]*run=true; break ;;$'
 
         $verifySteps = @($ci.jobs.pester.steps | Where-Object { $_.name -eq 'Verify action lockfile' })
         $verifySteps.Count | Should -Be 1
@@ -536,7 +539,10 @@ Describe 'CI workflow' {
         $verifyLines = @($verifySteps[0].run -split "`n")
         $verifyLines -ccontains 'set -euo pipefail' | Should -Be $true
         $verifyLines -ccontains 'gh actions-lock --verify --no-interactive' | Should -Be $true
-        @($verifyLines | Where-Object { $_ -cmatch '^echo "[0-9a-f]{64}  \$ext/gh-actions-lock" \| sha256sum -c -$' }).Count | Should -Be 1
+        $verifyLines -ccontains 'gh release download v0.2.0 -R github/gh-actions-lock -p linux-amd64 -O "$ext/gh-actions-lock"' | Should -Be $true
+        $verifyLines -ccontains 'echo "79ec84c191667fd935a277e6fd3662cf5d3669cccc9e99998731d8f306f373b6  $ext/gh-actions-lock" | sha256sum -c -' | Should -Be $true
+        $verifyLines -ccontains '(cd "$ext" && gh extension install .)' | Should -Be $true
+        @($verifyLines | Where-Object { $_ -cmatch 'gh extension install github/' }).Count | Should -Be 0
 
         $parserSteps = @($ci.jobs.pester.steps | Where-Object { $_.name -eq 'Install YAML parser' })
         $parserSteps.Count | Should -Be 1

@@ -95,7 +95,7 @@ session that lost the guidance must not also lose these.
 
 ### Action pins
 
-Workflows name actions by release tag; [`.github/workflows/actions.lock`](.github/workflows/actions.lock) locks each tag to an exact commit and the `pester` job checks it with `gh actions-lock --verify`. After adding or changing a `uses:`, regenerate the lockfile with `gh actions-lock --no-narrow` and commit both files. If every run ends in `startup_failure` with "Invalid lockfile" (a locked commit left its upstream branch, or a repository or owner ID changed), recover with `gh actions-lock --relock` and review the diff before committing.
+Workflows name actions by release tag; [`.github/workflows/actions.lock`](.github/workflows/actions.lock) locks each tag to an exact commit and the `pester` job checks it with `gh actions-lock --verify`. After adding or changing a `uses:`, regenerate the lockfile with `gh actions-lock --no-narrow` and commit both files. If every run ends in `startup_failure` with "Invalid lockfile", find which pin the runner rejected: a pin whose commit is no longer reachable upstream (force-push, or the commit left its branch) recovers with `gh actions-lock --accept-moved`, which re-resolves it to the ref's current commit; a moved ref (e.g. a retagged version) recovers with `gh actions-lock --relock`, which advances moved refs but leaves unreachable pins as errors. Either way, review the lockfile diff before committing. `--verify` does not prove reachability: when GitHub's API fails it reports "could not verify" and still exits 0, leaving the runner to re-check each pin at job start.
 
 ### CI salient paths
 
