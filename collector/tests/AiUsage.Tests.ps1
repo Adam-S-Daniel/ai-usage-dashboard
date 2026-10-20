@@ -479,7 +479,7 @@ Describe 'New-PublishPayload' {
 }
 
 Describe 'CI workflow' {
-    It 'keeps both required checks available and pins every action' {
+    It 'keeps both required checks available and locks every action in actions.lock' {
         if (-not (Get-Command ConvertFrom-Yaml -ErrorAction SilentlyContinue)) {
             if ($env:GITHUB_ACTIONS -or $env:CI) { throw 'ConvertFrom-Yaml is required in CI; the workflow must install the pinned powershell-yaml parser before running Pester.' }
             Write-Host '  YAML policy assertions skipped locally: no YAML parser is installed; CI installs the pinned powershell-yaml parser.'
@@ -510,6 +510,7 @@ Describe 'CI workflow' {
                     if (-not ($step.uses.StartsWith('./') -or $step.uses.StartsWith('$/') -or $step.uses.StartsWith('docker://'))) {
                         $lock.dependencies.Contains($step.uses) | Should -Be $true -Because "$($step.uses) needs an actions.lock entry"
                         $lock.dependencies[$step.uses].commit | Should -Match '^sha1-[0-9a-f]{40}$'
+                        $lock.dependencies[$step.uses].ref | Should -BeExactly $step.uses.Split('@', 2)[1]
                         @($lock.workflows['.github/workflows/ci.yml']) | Should -Contain $step.uses
                     }
                     if ($step.uses.StartsWith('actions/checkout@')) {
@@ -517,16 +518,25 @@ Describe 'CI workflow' {
                     }
                 }
             }
+            $detect = @($job.steps | Where-Object { $_.name -eq 'Detect salient changes' })
+            $detect.Count | Should -Be 1
+            $detect[0].run | Should -Match '(?m)^\s*if git diff --no-renames --name-only -z "\$base" "\$head" >'
+            $detect[0].run | Should -Not -Match 'git diff --name-only'
             $command = if ($id -eq 'node-test') { 'node --test tests/*.test.mjs' } else { 'pwsh -NoProfile -File collector/tests/Run-Tests.ps1' }
             @($job.steps | Where-Object { $_.run -eq $command }).Count | Should -Be 1
         }
+
+        $ci.jobs.pester.steps[1].run | Should -Match '(?m)^\s*[^)]*\|\.github/workflows/\*\) run=true; break ;;$'
 
         $verifySteps = @($ci.jobs.pester.steps | Where-Object { $_.name -eq 'Verify action lockfile' })
         $verifySteps.Count | Should -Be 1
         $verifySteps[0]['if'] | Should -Be "steps.changes.outputs.run == 'true'"
         $verifySteps[0].env.GH_TOKEN | Should -Be '${{ github.token }}'
-        $verifySteps[0].run | Should -Match '(?m)^gh extension install github/gh-actions-lock --pin v\d+\.\d+\.\d+$'
-        $verifySteps[0].run | Should -Match '(?m)^gh actions-lock --verify\b'
+        $verifySteps[0].Contains('continue-on-error') | Should -Be $false
+        $verifyLines = @($verifySteps[0].run -split "`n")
+        $verifyLines -ccontains 'set -euo pipefail' | Should -Be $true
+        $verifyLines -ccontains 'gh actions-lock --verify --no-interactive' | Should -Be $true
+        @($verifyLines | Where-Object { $_ -cmatch '^echo "[0-9a-f]{64}  \$ext/gh-actions-lock" \| sha256sum -c -$' }).Count | Should -Be 1
 
         $parserSteps = @($ci.jobs.pester.steps | Where-Object { $_.name -eq 'Install YAML parser' })
         $parserSteps.Count | Should -Be 1

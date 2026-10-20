@@ -93,6 +93,10 @@ session that lost the guidance must not also lose these.
 
 <!-- Add your repo-specific agent guidance below this line -->
 
+### Action pins
+
+Workflows name actions by release tag; [`.github/workflows/actions.lock`](.github/workflows/actions.lock) locks each tag to an exact commit and the `pester` job checks it with `gh actions-lock --verify`. After adding or changing a `uses:`, regenerate the lockfile with `gh actions-lock --no-narrow` and commit both files. If every run ends in `startup_failure` with "Invalid lockfile" (a locked commit left its upstream branch, or a repository or owner ID changed), recover with `gh actions-lock --relock` and review the diff before committing.
+
 ### CI salient paths
 
 [CI](.github/workflows/ci.yml) always reports `node-test` and `pester` on pull requests and pushes to `main`; both are intended required checks. Repository settings are managed separately. Each job detects changes after checkout, runs its suite on uncertain comparisons, and succeeds without testing when no salient path changed.
@@ -100,4 +104,4 @@ session that lost the guidance must not also lose these.
 | Job | Salient paths |
 |---|---|
 | `node-test` | `index.html`, `tests/**`, `collector/AiUsage.psm1` (encryption interoperability), `.github/workflows/ci.yml`, `.github/workflows/actions.lock` |
-| `pester` | `collector/AiUsage.psm1`, `collector/tests/**`, `.github/workflows/ci.yml`, `.github/workflows/actions.lock` |
+| `pester` | `collector/AiUsage.psm1`, `collector/tests/**`, `.github/workflows/*` (lockfile verification covers every workflow) |

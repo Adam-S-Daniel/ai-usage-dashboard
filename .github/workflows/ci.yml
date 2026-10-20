@@ -37,7 +37,7 @@ jobs:
           if [[ "$base" =~ ^[0-9a-f]{40}$ && "$head" =~ ^[0-9a-f]{40}$ ]] &&
              git cat-file -e "$base^{commit}" 2>/dev/null &&
              git cat-file -e "$head^{commit}" 2>/dev/null; then
-            if git diff --name-only -z "$base" "$head" > "$RUNNER_TEMP/changed-paths"; then
+            if git diff --no-renames --name-only -z "$base" "$head" > "$RUNNER_TEMP/changed-paths"; then
               run=false
               while IFS= read -r -d '' path; do
                 case "$path" in
@@ -86,11 +86,11 @@ jobs:
           if [[ "$base" =~ ^[0-9a-f]{40}$ && "$head" =~ ^[0-9a-f]{40}$ ]] &&
              git cat-file -e "$base^{commit}" 2>/dev/null &&
              git cat-file -e "$head^{commit}" 2>/dev/null; then
-            if git diff --name-only -z "$base" "$head" > "$RUNNER_TEMP/changed-paths"; then
+            if git diff --no-renames --name-only -z "$base" "$head" > "$RUNNER_TEMP/changed-paths"; then
               run=false
               while IFS= read -r -d '' path; do
                 case "$path" in
-                  collector/AiUsage.psm1|collector/tests/*|.github/workflows/ci.yml|.github/workflows/actions.lock) run=true; break ;;
+                  collector/AiUsage.psm1|collector/tests/*|.github/workflows/*) run=true; break ;;
                 esac
               done < "$RUNNER_TEMP/changed-paths"
             fi
@@ -104,7 +104,13 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh extension install github/gh-actions-lock --pin v0.2.0
+          set -euo pipefail
+          ext="$RUNNER_TEMP/gh-actions-lock"
+          mkdir -p "$ext"
+          gh release download v0.2.0 -R github/gh-actions-lock -p linux-amd64 -O "$ext/gh-actions-lock"
+          echo "79ec84c191667fd935a277e6fd3662cf5d3669cccc9e99998731d8f306f373b6  $ext/gh-actions-lock" | sha256sum -c -
+          chmod +x "$ext/gh-actions-lock"
+          (cd "$ext" && gh extension install .)
           gh actions-lock --verify --no-interactive
       - name: Install YAML parser
         if: steps.changes.outputs.run == 'true'
