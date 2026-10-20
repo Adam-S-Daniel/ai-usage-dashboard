@@ -1,0 +1,8 @@
+name: temp-probe
+description: TEMP lockfile probe; removed next commit
+runs:
+  using: composite
+  steps:
+    - uses: actions/github-script@v7.0.1
+      with:
+        script: core.info('composite inner action ran')
