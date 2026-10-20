@@ -494,7 +494,7 @@ Describe 'CI workflow' {
             foreach ($id in @($wf.jobs.Keys)) {
                 $ref = $wf.jobs[$id]['uses']
                 if ($null -eq $ref -or $ref.StartsWith('./') -or $ref.StartsWith('$/') -or $ref.StartsWith('Adam-S-Daniel/cms-platform/')) { continue }
-                $ref | Should -Match '@[0-9a-f]{40}$' -Because "$($file.Name) job $id calls a reusable workflow, which actions.lock does not lock"
+                $ref | Should -MatchExactly '@[0-9a-f]{40}$' -Because "$($file.Name) job $id calls a reusable workflow, which actions.lock does not lock"
             }
         }
     }
@@ -528,7 +528,7 @@ Describe 'CI workflow' {
                 if ($step.Contains('uses')) {
                     if (-not ($step.uses.StartsWith('./') -or $step.uses.StartsWith('$/') -or $step.uses.StartsWith('docker://'))) {
                         $lock.dependencies.Contains($step.uses) | Should -Be $true -Because "$($step.uses) needs an actions.lock entry"
-                        $lock.dependencies[$step.uses].commit | Should -Match '^sha1-[0-9a-f]{40}$'
+                        $lock.dependencies[$step.uses].commit | Should -MatchExactly '^sha1-[0-9a-f]{40}$'
                         $lock.dependencies[$step.uses].ref | Should -BeExactly $step.uses.Split('@', 2)[1]
                         @($lock.workflows['.github/workflows/ci.yml']) | Should -Contain $step.uses
                     }
@@ -562,8 +562,12 @@ Describe 'CI workflow' {
         $verifyLines -ccontains '  exit 1' | Should -Be $true
         $verifyLines -ccontains '  echo "::error::gh actions-lock --verify failed (exit $rc)."' | Should -Be $true
         $verifyLines -ccontains @'
-  jq -r 'def esc: tostring | gsub("%"; "%25") | gsub("\r"; "%0D") | gsub("\n"; "%0A"); .findings[]? | "::error::actions.lock \(.category | esc): \(.dependency // .workflow // "-" | esc): \(.detail | esc)"' <<<"$out" || echo '::error::gh actions-lock --verify returned no readable JSON.'
+  if jq -e 'type == "object"' <<<"$out" >/dev/null 2>&1; then
 '@ | Should -Be $true
+        $verifyLines -ccontains @'
+    jq -r 'def esc: tostring | gsub("%"; "%25") | gsub("\r"; "%0D") | gsub("\n"; "%0A"); .findings[]? | "::error::actions.lock \(.category | esc): \(.dependency // .workflow // "-" | esc): \(.detail | esc)"' <<<"$out"
+'@ | Should -Be $true
+        $verifyLines -ccontains "    echo '::error::gh actions-lock --verify returned no readable JSON.'" | Should -Be $true
         $verifyLines -ccontains 'gh release download v0.2.0 -R github/gh-actions-lock -p linux-amd64 -O "$ext/gh-actions-lock"' | Should -Be $true
         $verifyLines -ccontains 'echo "79ec84c191667fd935a277e6fd3662cf5d3669cccc9e99998731d8f306f373b6  $ext/gh-actions-lock" | sha256sum -c -' | Should -Be $true
         $verifyLines -ccontains '(cd "$ext" && gh extension install .)' | Should -Be $true
