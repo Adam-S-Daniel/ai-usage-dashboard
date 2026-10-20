@@ -538,7 +538,9 @@ Describe 'CI workflow' {
         $verifySteps[0].Contains('continue-on-error') | Should -Be $false
         $verifyLines = @($verifySteps[0].run -split "`n")
         $verifyLines -ccontains 'set -euo pipefail' | Should -Be $true
-        $verifyLines -ccontains 'gh actions-lock --verify --no-interactive' | Should -Be $true
+        $verifyLines -ccontains 'out=$(gh actions-lock --verify --no-interactive --json=valid,findings) || rc=$?' | Should -Be $true
+        $verifyLines -ccontains 'if [[ "$rc" -ne 0 ]]; then exit "$rc"; fi' | Should -Be $true
+        $verifyLines -ccontains "jq -e '.valid == true and (.findings | length) == 0' <<<`"`$out`" >/dev/null || { echo '::error::actions.lock: a pin could not be verified; re-run once the GitHub API is reachable.'; exit 1; }" | Should -Be $true
         $verifyLines -ccontains 'gh release download v0.2.0 -R github/gh-actions-lock -p linux-amd64 -O "$ext/gh-actions-lock"' | Should -Be $true
         $verifyLines -ccontains 'echo "79ec84c191667fd935a277e6fd3662cf5d3669cccc9e99998731d8f306f373b6  $ext/gh-actions-lock" | sha256sum -c -' | Should -Be $true
         $verifyLines -ccontains '(cd "$ext" && gh extension install .)' | Should -Be $true

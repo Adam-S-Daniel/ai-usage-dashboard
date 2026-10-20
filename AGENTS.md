@@ -95,7 +95,10 @@ session that lost the guidance must not also lose these.
 
 ### Action pins
 
-Workflows name actions by release tag; [`.github/workflows/actions.lock`](.github/workflows/actions.lock) locks each tag to an exact commit and the `pester` job checks it with `gh actions-lock --verify`. After adding or changing a `uses:`, regenerate the lockfile with `gh actions-lock --no-narrow` and commit both files. If every run ends in `startup_failure` with "Invalid lockfile", find which pin the runner rejected: a pin whose commit is no longer reachable upstream (force-push, or the commit left its branch) recovers with `gh actions-lock --accept-moved`, which re-resolves it to the ref's current commit; a moved ref (e.g. a retagged version) recovers with `gh actions-lock --relock`, which advances moved refs but leaves unreachable pins as errors. Either way, review the lockfile diff before committing. `--verify` does not prove reachability: when GitHub's API fails it reports "could not verify" and still exits 0, leaving the runner to re-check each pin at job start.
+Workflows name actions by release tag; [`.github/workflows/actions.lock`](.github/workflows/actions.lock) locks each tag to an exact commit, and the runner runs the locked commit even when it disagrees with the tag (a stale lockfile ran `actions/checkout@v7.0.1` at v7.0.0's commit with no error: [run 39357694809](https://github.com/Adam-S-Daniel/ai-usage-dashboard/actions/runs/39357694809)). The only guard is the `pester` job's "Verify action lockfile" step, which runs `gh actions-lock --verify` and fails on any finding. After adding or changing a `uses:`, regenerate the lockfile with `gh actions-lock --no-narrow` and commit both files; review an `actions.lock` diff as you would a SHA pin.
+
+- **A lockfile that disagrees with its tags** fails that step (the tool says "Pinned commit not in upstream history" even when the commit is merely not the tag's). If upstream really moved, recover with `gh actions-lock --accept-moved` for a pin whose commit is no longer reachable, or `gh actions-lock --relock` for a moved ref, which leaves unreachable pins as errors; review the diff before committing.
+- **A GitHub API failure fails the step too**: `--verify` itself exits 0 with a "could not verify" finding, so the step treats any finding as a failure. Re-run once the API is back.
 
 ### CI salient paths
 
