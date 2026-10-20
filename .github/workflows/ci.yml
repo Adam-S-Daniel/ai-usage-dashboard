@@ -90,7 +90,7 @@ jobs:
               run=false
               while IFS= read -r -d '' path; do
                 case "$path" in
-                  collector/AiUsage.psm1|collector/tests/*|.github/workflows/*) run=true; break ;;
+                  collector/AiUsage.psm1|collector/tests/*|.github/workflows/*|.github/actions/*) run=true; break ;;
                 esac
               done < "$RUNNER_TEMP/changed-paths"
             fi
@@ -113,10 +113,15 @@ jobs:
           (cd "$ext" && gh extension install .)
           rc=0
           out=$(gh actions-lock --verify --no-interactive --json=valid,findings) || rc=$?
-          printf '%s\n' "$out"
-          if [[ "$rc" -ne 0 ]]; then exit "$rc"; fi
-          # v0.2.0 exits 0 with a "could not verify" finding when the API fails; fail on any finding.
-          jq -e '.valid == true and (.findings | length) == 0' <<<"$out" >/dev/null || { echo '::error::actions.lock: a pin could not be verified; re-run once the GitHub API is reachable.'; exit 1; }
+          # v0.2.0 exits 0 with a reachability-unknown finding when the API fails; fail on any finding.
+          if [[ "$rc" -ne 0 ]] || ! jq -e '.valid == true and (.findings | length) == 0' <<<"$out" >/dev/null; then
+            jq -r '.findings[]? | "::error::actions.lock \(.category): \(.dependency // .workflow // "-"): \(.detail)"' <<<"$out" || printf '%s\n' "$out"
+            if jq -e 'any(.findings[]?; .category == "reachability-unknown")' <<<"$out" >/dev/null 2>&1; then
+              echo '::error::reachability-unknown means the GitHub API was unreachable; re-run once it is back.'
+            fi
+            echo "::error::gh actions-lock --verify failed (exit $rc)."
+            exit 1
+          fi
       - name: Install YAML parser
         if: steps.changes.outputs.run == 'true'
         shell: pwsh

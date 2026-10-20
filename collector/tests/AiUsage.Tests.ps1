@@ -527,7 +527,7 @@ Describe 'CI workflow' {
         }
 
         $pesterDetect = @($ci.jobs.pester.steps | Where-Object { $_.name -eq 'Detect salient changes' })
-        $pesterDetect[0].run | Should -Match '(?m)^\s*[^)]*\|\.github/workflows/\*\) run=true; break ;;$'
+        $pesterDetect[0].run | Should -Match '(?m)^\s*[^)]*\|\.github/workflows/\*\|\.github/actions/\*\) run=true; break ;;$'
         $nodeDetect = @($ci.jobs['node-test'].steps | Where-Object { $_.name -eq 'Detect salient changes' })
         $nodeDetect[0].run | Should -Match '(?m)^\s*[^)]*\|\.github/workflows/actions\.lock[|)][^\n]*run=true; break ;;$'
 
@@ -539,8 +539,10 @@ Describe 'CI workflow' {
         $verifyLines = @($verifySteps[0].run -split "`n")
         $verifyLines -ccontains 'set -euo pipefail' | Should -Be $true
         $verifyLines -ccontains 'out=$(gh actions-lock --verify --no-interactive --json=valid,findings) || rc=$?' | Should -Be $true
-        $verifyLines -ccontains 'if [[ "$rc" -ne 0 ]]; then exit "$rc"; fi' | Should -Be $true
-        $verifyLines -ccontains "jq -e '.valid == true and (.findings | length) == 0' <<<`"`$out`" >/dev/null || { echo '::error::actions.lock: a pin could not be verified; re-run once the GitHub API is reachable.'; exit 1; }" | Should -Be $true
+        $verifyLines -ccontains "if [[ `"`$rc`" -ne 0 ]] || ! jq -e '.valid == true and (.findings | length) == 0' <<<`"`$out`" >/dev/null; then" | Should -Be $true
+        $verifyLines -ccontains '  exit 1' | Should -Be $true
+        $verifyLines -ccontains '  echo "::error::gh actions-lock --verify failed (exit $rc)."' | Should -Be $true
+        @($verifyLines | Where-Object { $_ -cmatch '^  jq -r ''\.findings\[\]\? \| "::error::actions\.lock \\\(\.category\)' }).Count | Should -Be 1
         $verifyLines -ccontains 'gh release download v0.2.0 -R github/gh-actions-lock -p linux-amd64 -O "$ext/gh-actions-lock"' | Should -Be $true
         $verifyLines -ccontains 'echo "79ec84c191667fd935a277e6fd3662cf5d3669cccc9e99998731d8f306f373b6  $ext/gh-actions-lock" | sha256sum -c -' | Should -Be $true
         $verifyLines -ccontains '(cd "$ext" && gh extension install .)' | Should -Be $true
