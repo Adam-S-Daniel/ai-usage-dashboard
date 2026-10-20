@@ -115,7 +115,8 @@ jobs:
           out=$(gh actions-lock --verify --no-interactive --json=valid,findings) || rc=$?
           # v0.2.0 exits 0 with a reachability-unknown finding when the API fails; fail on any finding.
           if [[ "$rc" -ne 0 ]] || ! jq -e '.valid == true and (.findings | length) == 0' <<<"$out" >/dev/null; then
-            jq -r '.findings[]? | "::error::actions.lock \(.category): \(.dependency // .workflow // "-"): \(.detail)"' <<<"$out" || printf '%s\n' "$out"
+            # Escape %, CR and LF so finding text cannot start a new workflow command.
+            jq -r 'def esc: tostring | gsub("%"; "%25") | gsub("\r"; "%0D") | gsub("\n"; "%0A"); .findings[]? | "::error::actions.lock \(.category | esc): \(.dependency // .workflow // "-" | esc): \(.detail | esc)"' <<<"$out" || echo '::error::gh actions-lock --verify returned no readable JSON.'
             if jq -e 'any(.findings[]?; .category == "reachability-unknown")' <<<"$out" >/dev/null 2>&1; then
               echo '::error::reachability-unknown means the GitHub API was unreachable; re-run once it is back.'
             fi

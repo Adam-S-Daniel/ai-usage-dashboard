@@ -99,7 +99,7 @@ Workflows name actions by release tag; [`.github/workflows/actions.lock`](.githu
 
 - **A lockfile that disagrees with its tags** fails that step as `unreachable-pin` (the tool says "Pinned commit not in upstream history" even when the commit is merely not the tag's). If upstream really moved, `gh actions-lock --accept-moved` re-resolves only the flagged pins to the tag's current commit; tested 2026-10-20, it fixes both a mismatched and an unreachable pin, while `--relock` alone leaves an unreachable pin failing and advances every moved ref. Review the diff before committing.
 - **A GitHub API failure fails the step too** as `reachability-unknown`: `--verify` itself exits 0 then, so the step treats any finding as a failure. Re-run once the API is back.
-- **A cross-repo reusable workflow (`jobs.<id>.uses`) is not locked**: it gets no lockfile entry and runs the ref's live commit (tested 2026-10-20, [run 39359501093](https://github.com/Adam-S-Daniel/ai-usage-dashboard/actions/runs/39359501093)), so pin one by full SHA.
+- **A cross-repo reusable workflow (`jobs.<id>.uses`) is not locked**: it gets no lockfile entry and runs the ref's live commit (tested 2026-10-20, [run 39359501093](https://github.com/Adam-S-Daniel/ai-usage-dashboard/actions/runs/39359501093)), so pin one by full SHA. `--verify` and `sha_pinning_required` both accept a tag or branch there; the Pester test "pins every cross-repo reusable workflow to a full commit SHA" is the check. A same-repo `./.github/workflows/<x>.yml` stays `./`: the tool locks the called workflow's own actions under its entry.
 
 ### CI salient paths
 

@@ -479,6 +479,25 @@ Describe 'New-PublishPayload' {
 }
 
 Describe 'CI workflow' {
+    It 'pins every cross-repo reusable workflow to a full commit SHA' {
+        if (-not (Get-Command ConvertFrom-Yaml -ErrorAction SilentlyContinue)) {
+            if ($env:GITHUB_ACTIONS -or $env:CI) { throw 'ConvertFrom-Yaml is required in CI; the workflow must install the pinned powershell-yaml parser before running Pester.' }
+            if (Get-Command Set-ItResult -ErrorAction SilentlyContinue) { Set-ItResult -Skipped -Because 'No YAML parser is installed locally; CI installs the pinned powershell-yaml parser.' }
+            return
+        }
+        # actions.lock does not lock jobs.<id>.uses and sha_pinning_required covers actions only,
+        # so this is the only automated check on a reusable-workflow ref.
+        $files = @(Get-ChildItem "$PSScriptRoot/../../.github/workflows" -File | Where-Object { $_.Extension -in '.yml', '.yaml' })
+        $files.Count | Should -BeGreaterThan 0
+        foreach ($file in $files) {
+            $wf = Get-Content -Raw $file.FullName | ConvertFrom-Yaml
+            foreach ($id in @($wf.jobs.Keys)) {
+                $ref = $wf.jobs[$id]['uses']
+                if ($null -eq $ref -or $ref.StartsWith('./') -or $ref.StartsWith('$/') -or $ref.StartsWith('Adam-S-Daniel/cms-platform/')) { continue }
+                $ref | Should -Match '@[0-9a-f]{40}$' -Because "$($file.Name) job $id calls a reusable workflow, which actions.lock does not lock"
+            }
+        }
+    }
     It 'keeps both required checks available and locks every action in actions.lock' {
         if (-not (Get-Command ConvertFrom-Yaml -ErrorAction SilentlyContinue)) {
             if ($env:GITHUB_ACTIONS -or $env:CI) { throw 'ConvertFrom-Yaml is required in CI; the workflow must install the pinned powershell-yaml parser before running Pester.' }
@@ -542,7 +561,9 @@ Describe 'CI workflow' {
         $verifyLines -ccontains "if [[ `"`$rc`" -ne 0 ]] || ! jq -e '.valid == true and (.findings | length) == 0' <<<`"`$out`" >/dev/null; then" | Should -Be $true
         $verifyLines -ccontains '  exit 1' | Should -Be $true
         $verifyLines -ccontains '  echo "::error::gh actions-lock --verify failed (exit $rc)."' | Should -Be $true
-        @($verifyLines | Where-Object { $_ -cmatch '^  jq -r ''\.findings\[\]\? \| "::error::actions\.lock \\\(\.category\)' }).Count | Should -Be 1
+        $verifyLines -ccontains @'
+  jq -r 'def esc: tostring | gsub("%"; "%25") | gsub("\r"; "%0D") | gsub("\n"; "%0A"); .findings[]? | "::error::actions.lock \(.category | esc): \(.dependency // .workflow // "-" | esc): \(.detail | esc)"' <<<"$out" || echo '::error::gh actions-lock --verify returned no readable JSON.'
+'@ | Should -Be $true
         $verifyLines -ccontains 'gh release download v0.2.0 -R github/gh-actions-lock -p linux-amd64 -O "$ext/gh-actions-lock"' | Should -Be $true
         $verifyLines -ccontains 'echo "79ec84c191667fd935a277e6fd3662cf5d3669cccc9e99998731d8f306f373b6  $ext/gh-actions-lock" | sha256sum -c -' | Should -Be $true
         $verifyLines -ccontains '(cd "$ext" && gh extension install .)' | Should -Be $true
