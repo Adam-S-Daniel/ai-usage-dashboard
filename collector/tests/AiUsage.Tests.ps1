@@ -487,6 +487,7 @@ Describe 'CI workflow' {
             return
         }
         $ci = Get-Content -Raw "$PSScriptRoot/../../.github/workflows/ci.yml" | ConvertFrom-Yaml
+        $lock = Get-Content -Raw "$PSScriptRoot/../../.github/workflows/actions.lock" | ConvertFrom-Yaml
         (@($ci.jobs.Keys | Sort-Object) -join ',') | Should -Be 'node-test,pester'
         $ci.on.Contains('pull_request') | Should -Be $true
         (@($ci.on.push.branches) -join ',') | Should -Be 'main'
@@ -506,7 +507,11 @@ Describe 'CI workflow' {
             foreach ($step in $job.steps) {
                 $step.Contains('timeout-minutes') | Should -Be $false
                 if ($step.Contains('uses')) {
-                    ($step.uses -match '@[0-9a-f]{40}$') | Should -Be $true
+                    if (-not ($step.uses.StartsWith('./') -or $step.uses.StartsWith('$/') -or $step.uses.StartsWith('docker://'))) {
+                        $lock.dependencies.Contains($step.uses) | Should -Be $true -Because "$($step.uses) needs an actions.lock entry"
+                        $lock.dependencies[$step.uses].commit | Should -Match '^sha1-[0-9a-f]{40}$'
+                        @($lock.workflows['.github/workflows/ci.yml']) | Should -Contain $step.uses
+                    }
                     if ($step.uses.StartsWith('actions/checkout@')) {
                         $step.with['persist-credentials'] | Should -Be $false
                     }
@@ -515,6 +520,13 @@ Describe 'CI workflow' {
             $command = if ($id -eq 'node-test') { 'node --test tests/*.test.mjs' } else { 'pwsh -NoProfile -File collector/tests/Run-Tests.ps1' }
             @($job.steps | Where-Object { $_.run -eq $command }).Count | Should -Be 1
         }
+
+        $verifySteps = @($ci.jobs.pester.steps | Where-Object { $_.name -eq 'Verify action lockfile' })
+        $verifySteps.Count | Should -Be 1
+        $verifySteps[0]['if'] | Should -Be "steps.changes.outputs.run == 'true'"
+        $verifySteps[0].env.GH_TOKEN | Should -Be '${{ github.token }}'
+        $verifySteps[0].run | Should -Match '(?m)^gh extension install github/gh-actions-lock --pin v\d+\.\d+\.\d+$'
+        $verifySteps[0].run | Should -Match '(?m)^gh actions-lock --verify\b'
 
         $parserSteps = @($ci.jobs.pester.steps | Where-Object { $_.name -eq 'Install YAML parser' })
         $parserSteps.Count | Should -Be 1

@@ -99,5 +99,5 @@ session that lost the guidance must not also lose these.
 
 | Job | Salient paths |
 |---|---|
-| `node-test` | `index.html`, `tests/**`, `collector/AiUsage.psm1` (encryption interoperability), `.github/workflows/ci.yml` |
-| `pester` | `collector/AiUsage.psm1`, `collector/tests/**`, `.github/workflows/ci.yml` |
+| `node-test` | `index.html`, `tests/**`, `collector/AiUsage.psm1` (encryption interoperability), `.github/workflows/ci.yml`, `.github/workflows/actions.lock` |
+| `pester` | `collector/AiUsage.psm1`, `collector/tests/**`, `.github/workflows/ci.yml`, `.github/workflows/actions.lock` |
