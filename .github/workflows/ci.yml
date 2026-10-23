@@ -100,7 +100,7 @@ jobs:
         if: steps.changes.outputs.run != 'true'
         run: echo 'No relevant changes; required check succeeds.'
       - name: Verify action lockfile
-        uses: Adam-S-Daniel/verify-actions-lock@v1.0.0
+        uses: Adam-S-Daniel/verify-actions-lock@v1.1.0
       - name: Install YAML parser
         if: steps.changes.outputs.run == 'true'
         shell: pwsh
