@@ -12,7 +12,7 @@ jobs:
   node-test:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - uses: actions/checkout@v7.0.1
         with:
           persist-credentials: false
           fetch-depth: 0
@@ -37,11 +37,11 @@ jobs:
           if [[ "$base" =~ ^[0-9a-f]{40}$ && "$head" =~ ^[0-9a-f]{40}$ ]] &&
              git cat-file -e "$base^{commit}" 2>/dev/null &&
              git cat-file -e "$head^{commit}" 2>/dev/null; then
-            if git diff --name-only -z "$base" "$head" > "$RUNNER_TEMP/changed-paths"; then
+            if git diff --no-renames --name-only -z "$base" "$head" > "$RUNNER_TEMP/changed-paths"; then
               run=false
               while IFS= read -r -d '' path; do
                 case "$path" in
-                  index.html|tests/*|collector/AiUsage.psm1|.github/workflows/ci.yml) run=true; break ;;
+                  index.html|tests/*|collector/AiUsage.psm1|.github/workflows/ci.yml|.github/workflows/actions.lock) run=true; break ;;
                 esac
               done < "$RUNNER_TEMP/changed-paths"
             fi
@@ -50,7 +50,7 @@ jobs:
       - name: No salient changes
         if: steps.changes.outputs.run != 'true'
         run: echo 'No relevant changes; required check succeeds.'
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+      - uses: actions/setup-node@v7.0.0
         if: steps.changes.outputs.run == 'true'
         with:
           node-version: '24'
@@ -61,7 +61,7 @@ jobs:
   pester:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - uses: actions/checkout@v7.0.1
         with:
           persist-credentials: false
           fetch-depth: 0
@@ -86,11 +86,11 @@ jobs:
           if [[ "$base" =~ ^[0-9a-f]{40}$ && "$head" =~ ^[0-9a-f]{40}$ ]] &&
              git cat-file -e "$base^{commit}" 2>/dev/null &&
              git cat-file -e "$head^{commit}" 2>/dev/null; then
-            if git diff --name-only -z "$base" "$head" > "$RUNNER_TEMP/changed-paths"; then
+            if git diff --no-renames --name-only -z "$base" "$head" > "$RUNNER_TEMP/changed-paths"; then
               run=false
               while IFS= read -r -d '' path; do
                 case "$path" in
-                  collector/AiUsage.psm1|collector/tests/*|.github/workflows/ci.yml) run=true; break ;;
+                  collector/AiUsage.psm1|collector/tests/*|.github/workflows/*|.github/actions/*) run=true; break ;;
                 esac
               done < "$RUNNER_TEMP/changed-paths"
             fi
@@ -99,6 +99,8 @@ jobs:
       - name: No salient changes
         if: steps.changes.outputs.run != 'true'
         run: echo 'No relevant changes; required check succeeds.'
+      - name: Verify action lockfile
+        uses: Adam-S-Daniel/verify-actions-lock@v1.1.0
       - name: Install YAML parser
         if: steps.changes.outputs.run == 'true'
         shell: pwsh

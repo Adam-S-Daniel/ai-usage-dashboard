@@ -479,7 +479,26 @@ Describe 'New-PublishPayload' {
 }
 
 Describe 'CI workflow' {
-    It 'keeps both required checks available and pins every action' {
+    It 'pins every cross-repo reusable workflow to a full commit SHA' {
+        if (-not (Get-Command ConvertFrom-Yaml -ErrorAction SilentlyContinue)) {
+            if ($env:GITHUB_ACTIONS -or $env:CI) { throw 'ConvertFrom-Yaml is required in CI; the workflow must install the pinned powershell-yaml parser before running Pester.' }
+            if (Get-Command Set-ItResult -ErrorAction SilentlyContinue) { Set-ItResult -Skipped -Because 'No YAML parser is installed locally; CI installs the pinned powershell-yaml parser.' }
+            return
+        }
+        # actions.lock does not lock jobs.<id>.uses and sha_pinning_required covers actions only,
+        # so this is the only automated check on a reusable-workflow ref.
+        $files = @(Get-ChildItem "$PSScriptRoot/../../.github/workflows" -File | Where-Object { $_.Extension -in '.yml', '.yaml' })
+        $files.Count | Should -BeGreaterThan 0
+        foreach ($file in $files) {
+            $wf = Get-Content -Raw $file.FullName | ConvertFrom-Yaml
+            foreach ($id in @($wf.jobs.Keys)) {
+                $ref = $wf.jobs[$id]['uses']
+                if ($null -eq $ref -or $ref.StartsWith('./') -or $ref.StartsWith('$/') -or $ref.StartsWith('Adam-S-Daniel/cms-platform/')) { continue }
+                $ref | Should -MatchExactly '@[0-9a-f]{40}$' -Because "$($file.Name) job $id calls a reusable workflow, which actions.lock does not lock"
+            }
+        }
+    }
+    It 'keeps both required checks available and locks every action in actions.lock' {
         if (-not (Get-Command ConvertFrom-Yaml -ErrorAction SilentlyContinue)) {
             if ($env:GITHUB_ACTIONS -or $env:CI) { throw 'ConvertFrom-Yaml is required in CI; the workflow must install the pinned powershell-yaml parser before running Pester.' }
             Write-Host '  YAML policy assertions skipped locally: no YAML parser is installed; CI installs the pinned powershell-yaml parser.'
@@ -487,6 +506,7 @@ Describe 'CI workflow' {
             return
         }
         $ci = Get-Content -Raw "$PSScriptRoot/../../.github/workflows/ci.yml" | ConvertFrom-Yaml
+        $lock = Get-Content -Raw "$PSScriptRoot/../../.github/workflows/actions.lock" | ConvertFrom-Yaml
         (@($ci.jobs.Keys | Sort-Object) -join ',') | Should -Be 'node-test,pester'
         $ci.on.Contains('pull_request') | Should -Be $true
         (@($ci.on.push.branches) -join ',') | Should -Be 'main'
@@ -506,15 +526,39 @@ Describe 'CI workflow' {
             foreach ($step in $job.steps) {
                 $step.Contains('timeout-minutes') | Should -Be $false
                 if ($step.Contains('uses')) {
-                    ($step.uses -match '@[0-9a-f]{40}$') | Should -Be $true
+                    if (-not ($step.uses.StartsWith('./') -or $step.uses.StartsWith('$/') -or $step.uses.StartsWith('docker://'))) {
+                        # actions.lock lowercases owner/repo; the tag after '@' keeps its case.
+                        $at = $step.uses.LastIndexOf('@')
+                        $useParts = @($step.uses.Substring(0, $at), $step.uses.Substring($at + 1))
+                        $lockKey = $useParts[0].ToLowerInvariant() + '@' + $useParts[1]
+                        $lock.dependencies.Contains($lockKey) | Should -Be $true -Because "$($step.uses) needs an actions.lock entry"
+                        $lock.dependencies[$lockKey].commit | Should -MatchExactly '^sha1-[0-9a-f]{40}$'
+                        $lock.dependencies[$lockKey].ref | Should -BeExactly $useParts[1]
+                        @($lock.workflows['.github/workflows/ci.yml']) | Should -Contain $lockKey
+                    }
                     if ($step.uses.StartsWith('actions/checkout@')) {
                         $step.with['persist-credentials'] | Should -Be $false
                     }
                 }
             }
+            $detect = @($job.steps | Where-Object { $_.name -eq 'Detect salient changes' })
+            $detect.Count | Should -Be 1
+            $detect[0].run | Should -Match '(?m)^\s*if git diff --no-renames --name-only -z "\$base" "\$head" >'
+            $detect[0].run | Should -Not -Match 'git diff --name-only'
             $command = if ($id -eq 'node-test') { 'node --test tests/*.test.mjs' } else { 'pwsh -NoProfile -File collector/tests/Run-Tests.ps1' }
             @($job.steps | Where-Object { $_.run -eq $command }).Count | Should -Be 1
         }
+
+        $pesterDetect = @($ci.jobs.pester.steps | Where-Object { $_.name -eq 'Detect salient changes' })
+        $pesterDetect[0].run | Should -Match '(?m)^\s*[^)]*\|\.github/workflows/\*\|\.github/actions/\*\) run=true; break ;;$'
+        $nodeDetect = @($ci.jobs['node-test'].steps | Where-Object { $_.name -eq 'Detect salient changes' })
+        $nodeDetect[0].run | Should -Match '(?m)^\s*[^)]*\|\.github/workflows/actions\.lock[|)][^\n]*run=true; break ;;$'
+
+        $verifySteps = @($ci.jobs.pester.steps | Where-Object { $_.name -eq 'Verify action lockfile' })
+        $verifySteps.Count | Should -Be 1
+        $verifySteps[0].uses | Should -MatchExactly '^Adam-S-Daniel/verify-actions-lock@v\d+\.\d+\.\d+$'
+        $verifySteps[0].Contains('if') | Should -Be $false
+        $verifySteps[0].Contains('continue-on-error') | Should -Be $false
 
         $parserSteps = @($ci.jobs.pester.steps | Where-Object { $_.name -eq 'Install YAML parser' })
         $parserSteps.Count | Should -Be 1
