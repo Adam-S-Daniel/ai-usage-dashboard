@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'sha256-NN9YJgT6OlXaM1jr++NVhldLNn7ihkWtdXIN8yoS+I4='; connect-src https://api.github.com https://gist.githubusercontent.com; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'sha256-KMv2yCrb06xyY3dI+IUt0X1iPHQaW6H9uRvx30wlJ+M='; connect-src https://api.github.com https://gist.githubusercontent.com; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'">
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-title" content="AI Usage">
@@ -103,7 +103,9 @@ function meter(w, now) {
   if (s.expired) sub = "Window has reset; waiting for new data";
   else if (s.elapsed === null) sub = "No active window";
   else {
-    sub = `${s.elapsed.toFixed(0)}% of period elapsed · resets in ${dur(s.left)}`;
+    // paced_from: the collector shortened the period to start at a manual reset (config.json claudePaceFrom).
+    const from = w.paced_from ? ` since reset ${new Date(w.paced_from).toLocaleString([], { weekday: "short", hour: "numeric", minute: "2-digit" })}` : "";
+    sub = `${s.elapsed.toFixed(0)}% of period elapsed${from} · resets in ${dur(s.left)}`;
     const d = Math.round(s.diff);
     const cls = s.used >= 90 || (s.projected && s.projected >= 100) ? "crit" : d > 0 ? "warn" : "good";
     const icon = cls === "good" ? "✓" : cls === "warn" ? "▲" : "●";
@@ -324,6 +326,7 @@ function validateUsage(doc) {
       need(num(w.used_pct), q + ".used_pct");
       opt(w.resets_at, when, q + ".resets_at");
       need(num(w.period_seconds) && w.period_seconds > 0, q + ".period_seconds");
+      opt(w.paced_from, when, q + ".paced_from");
     });
     // Optional: older documents lack it. Codename limits shown for information; they have no period.
     list(s.other, p + ".other", MAX_OTHER, (o, q) => {

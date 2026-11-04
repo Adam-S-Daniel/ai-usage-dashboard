@@ -582,3 +582,42 @@ Describe 'CI workflow' {
         ($installerCommands[0].CommandElements | ForEach-Object { $_.Extent.Text }) -join ' ' | Should -Be 'Install-Module -Name powershell-yaml -RequiredVersion 0.4.12 -Repository PSGallery -Scope CurrentUser -Force -ErrorAction Stop'
     }
 }
+
+Describe 'Claude pacing from a manual reset' {
+    BeforeAll {
+        $script:PaceCfg = '{"claudePaceFrom":{"start":"2026-11-04T18:15:00Z","until":"2026-11-09T17:00:00Z"}}' | ConvertFrom-Json
+        $script:PaceResp = '{"five_hour":{"utilization":5,"resets_at":"2026-11-04T22:00:00Z"},"seven_day":{"utilization":3,"resets_at":"2026-11-09T17:00:00Z"},"limits":[{"kind":"weekly_scoped","percent":1,"resets_at":"2026-11-09T17:00:00Z","scope":{"model":{"display_name":"Fable"}}}]}'
+    }
+    It 'is off when the setting is missing, not started yet, or expired' {
+        Get-ClaudePaceFrom -Config ('{"days":30}' | ConvertFrom-Json) -Now ([datetimeoffset]'2026-11-05T00:00:00Z') | Should -Be $null
+        Get-ClaudePaceFrom -Config $script:PaceCfg -Now ([datetimeoffset]'2026-11-04T18:14:59Z') | Should -Be $null
+        Get-ClaudePaceFrom -Config $script:PaceCfg -Now ([datetimeoffset]'2026-11-09T17:00:00Z') | Should -Be $null
+    }
+    It 'throws a descriptive error for a malformed setting' {
+        foreach ($bad in '{"claudePaceFrom":{"start":"2026-11-04T18:15:00Z"}}', '{"claudePaceFrom":{"start":"soon","until":"2026-11-09T17:00:00Z"}}',
+            '{"claudePaceFrom":{"start":"2026-11-04T18:15:00","until":"2026-11-09T17:00:00Z"}}', '{"claudePaceFrom":{"start":"2026-11-09T17:00:00Z","until":"2026-11-04T18:15:00Z"}}') {
+            $msg = try { Get-ClaudePaceFrom -Config ($bad | ConvertFrom-Json) -Now ([datetimeoffset]'2026-11-05T00:00:00Z'); 'no error' } catch { $_.Exception.Message }
+            $msg | Should -Be 'config.json claudePaceFrom needs "start" and "until" as ISO 8601 times with an offset, start before until'
+            (Get-ErrorText ([Exception]::new($msg)) 'claude') | Should -Be 'claude: claudePaceFrom in config.json is invalid; see the README'
+        }
+    }
+    It 'paces every weekly window that resets in range from start, and leaves the session window alone' {
+        $now = [datetimeoffset]'2026-11-05T00:00:00Z'
+        $s = ConvertTo-ClaudeSource -Response ($script:PaceResp | ConvertFrom-Json) -Plan 'max' -Now $now
+        $s = Set-ClaudePace $s (Get-ClaudePaceFrom -Config $script:PaceCfg -Now $now)
+        $s.windows[0].period_seconds | Should -Be 18000
+        $s.windows[0].Contains('paced_from') | Should -Be $false
+        foreach ($w in $s.windows[1], $s.windows[2]) {
+            $w.period_seconds | Should -Be 427500
+            $w.paced_from | Should -Be '2026-11-04T18:15:00Z'
+        }
+    }
+    It 'keeps the full week once the API reports the next weekly reset' {
+        $now = [datetimeoffset]'2026-11-09T16:59:00Z'
+        $resp = $script:PaceResp -replace '2026-11-09T17:00:00Z', '2026-11-16T17:00:00Z'
+        $s = ConvertTo-ClaudeSource -Response ($resp | ConvertFrom-Json) -Plan 'max' -Now $now
+        $s = Set-ClaudePace $s (Get-ClaudePaceFrom -Config $script:PaceCfg -Now $now)
+        $s.windows[1].period_seconds | Should -Be 604800
+        $s.windows[1].Contains('paced_from') | Should -Be $false
+    }
+}
