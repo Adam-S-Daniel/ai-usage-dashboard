@@ -741,3 +741,20 @@ test("other: a hostile codename label is rendered as text", async () => {
   assert.ok(p.app().includes("&lt;img src=x onerror=alert(1)&gt;"));
   assert.doesNotMatch(p.app(), /<img/);
 });
+
+test("pace: a weekly window paced from a manual reset shows its shortened period and where it starts", async () => {
+  const doc = validDoc();
+  // Started 2 h ago, resets in 6 h: 25% of the paced period has elapsed, not the 95% a full week would show.
+  doc.sources.claude.windows.push({ id: "seven_day", label: "Week, all models", used_pct: 10, resets_at: iso(6 * 36e5), period_seconds: 8 * 3600, paced_from: iso(-2 * 36e5) });
+  const p = await boot({ hash: "#" + A, gists: { [A]: doc } });
+  assert.match(p.app(), /25% of period elapsed since reset /);
+  assert.match(p.app(), /15 pts under pace/);
+  assert.doesNotMatch(p.app(), /12% of period elapsed since reset/); // the unpaced session window says nothing about a reset
+});
+
+test("pace: a paced_from that is not a date is rejected", async () => {
+  const doc = validDoc();
+  doc.sources.claude.windows[0].paced_from = "<b>soon</b>";
+  const p = await boot({ hash: "#" + A, gists: { [A]: doc } });
+  assert.match(p.app(), /malformed: sources\.claude\.windows\[0\]\.paced_from/);
+});

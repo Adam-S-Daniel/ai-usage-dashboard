@@ -67,6 +67,45 @@ function ConvertTo-ClaudeSource {
     [ordered]@{ ok = $true; fetched_at = ConvertTo-IsoUtc $Now; plan = $Plan; windows = @($windows) + @($scoped); other = @($other) }
 }
 
+# config.json "claudePaceFrom": {"start": "<ISO time>", "until": "<ISO time>"}, for a manual weekly-limit reset.
+# Pressing it zeroes the meter but the API keeps reporting the usual weekly reset time, so a 7-day pace would
+# count days from before the reset. While now is between start and until, each Claude weekly window that resets
+# after start and no later than until is paced over start..reset instead. From until on the setting does nothing,
+# so pacing goes back to the full week by itself; delete the setting at leisure.
+# Returns $null when unset, not yet started or expired; throws when it is set but malformed.
+function Get-ClaudePaceFrom($Config, [datetimeoffset]$Now) {
+    $p = Get-Prop $Config 'claudePaceFrom'
+    if ($null -eq $p) { return $null }
+    $bad = 'config.json claudePaceFrom needs "start" and "until" as ISO 8601 times with an offset, start before until'
+    $start = $null; $until = $null
+    $styles = [Globalization.DateTimeStyles]::None
+    foreach ($n in 'start', 'until') {
+        $v = Get-Prop $p $n
+        $t = [datetimeoffset]::MinValue
+        # ConvertFrom-Json turns ISO strings into [datetime]; one with no offset comes back Unspecified.
+        if ($v -is [datetime]) { if ($v.Kind -eq 'Unspecified') { throw $bad }; $t = [datetimeoffset]$v.ToUniversalTime() }
+        elseif ($v -isnot [string] -or $v -notmatch '(Z|[+-]\d{2}:\d{2})$' -or -not [datetimeoffset]::TryParse($v, [cultureinfo]::InvariantCulture, $styles, [ref]$t)) { throw $bad }
+        if ($n -eq 'start') { $start = $t } else { $until = $t }
+    }
+    if ($start -ge $until) { throw $bad }
+    if ($Now -lt $start -or $Now -ge $until) { return $null }
+    @{ start = $start; until = $until }
+}
+
+# Applies Get-ClaudePaceFrom's result to a Claude source: shortens period_seconds of the matching weekly windows
+# and records paced_from, which the page shows. Windows outside the range are left alone.
+function Set-ClaudePace($Source, $Pace) {
+    if ($null -eq $Pace -or -not $Source.ok) { return $Source }
+    foreach ($w in @($Source.windows)) {
+        if ($w.period_seconds -ne 604800 -or -not $w.resets_at) { continue }
+        $r = [datetimeoffset]::Parse($w.resets_at, [cultureinfo]::InvariantCulture)
+        if ($r -le $Pace.start -or $r -gt $Pace.until) { continue }
+        $w.period_seconds = [long][Math]::Round(($r - $Pace.start).TotalSeconds)
+        $w.paced_from = ConvertTo-IsoUtc $Pace.start
+    }
+    $Source
+}
+
 function Get-WindowLabel([long]$Seconds) {
     if ($Seconds -eq 18000) { return 'Session (5 h)' }
     if ($Seconds -eq 604800) { return 'Week' }
@@ -181,6 +220,7 @@ function Get-ErrorText {
     $what = if ($m -like 'Federation was refused (401)*') { 'federation refused (HTTP 401); check the rule and issuer in the Console' }
     elseif ($m -like 'No Claude Code login found*') { 'no Claude Code login; run claude and log in' }
     elseif ($m -like 'Claude Code token expired*') { 'Claude Code login expired; open Claude Code to renew it' }
+    elseif ($m -like 'config.json claudePaceFrom*') { 'claudePaceFrom in config.json is invalid; see the README' }
     elseif ($m -like 'No Codex ChatGPT login found*') { 'no Codex login; run codex login' }
     elseif ($m -like 'Claude platform access is not set up*') { 'platform access is not set up; run Install.ps1 -SetupWif' }
     elseif ($m -like 'Token exchange failed*') { if ($code) { "token exchange failed (HTTP $code)" } else { 'token exchange failed' } }
@@ -495,7 +535,7 @@ function Invoke-AiUsageCollect {
     $now = [datetimeoffset]::UtcNow
     $days = Get-CollectDays $config
     $fetchers = [ordered]@{
-        claude   = { Get-ClaudeSource $now }
+        claude   = { Set-ClaudePace (Get-ClaudeSource $now) (Get-ClaudePaceFrom $config $now) }
         codex    = { Get-CodexSource $now }
         platform = { Get-PlatformSource $now (Get-PlatformHeaders $config $ConfigDir $now) $days }
     }
@@ -511,4 +551,4 @@ function Invoke-AiUsageCollect {
     $payload.json
 }
 
-Export-ModuleMember -Function ConvertTo-*, ConvertFrom-Base64Url, New-UsageKey, Protect-UsageJson, Unprotect-UsageJson, Get-WindowLabel, New-Wif*, Select-PlatformAuth, Get-WifKey, Merge-Source, Get-ErrorText, New-PublishPayload, Get-CollectDays, Select-ClaudeCredential, Get-CodexCredential, Save-AdminKey, Read-AdminKey, Invoke-AiUsageCollect
+Export-ModuleMember -Function ConvertTo-*, ConvertFrom-Base64Url, New-UsageKey, Protect-UsageJson, Unprotect-UsageJson, Get-WindowLabel, New-Wif*, Select-PlatformAuth, Get-WifKey, Merge-Source, Get-ErrorText, New-PublishPayload, Get-CollectDays, Get-ClaudePaceFrom, Set-ClaudePace, Select-ClaudeCredential, Get-CodexCredential, Save-AdminKey, Read-AdminKey, Invoke-AiUsageCollect
