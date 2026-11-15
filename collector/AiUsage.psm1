@@ -582,29 +582,34 @@ function ConvertTo-MeterRows {
 
 function Invoke-Git {
     param([string]$Repo, [Parameter(ValueFromRemainingArguments)][string[]]$GitArgs)
-    $out = git -C $Repo @GitArgs 2>&1
+    # Never prompt (a scheduled task has no one to answer), give up on a stalled transfer, and leave line endings alone.
+    $env:GIT_TERMINAL_PROMPT = '0'
+    $out = git -C $Repo -c core.autocrlf=false -c http.lowSpeedLimit=1000 -c http.lowSpeedTime=20 @GitArgs 2>&1
     if ($LASTEXITCODE -ne 0) { throw "git $($GitArgs[0]) failed ($LASTEXITCODE)" }
     $out
 }
 
 function Push-MeterRows {
-    param([string]$Clone, [string]$Branch, [string]$Path, [string[]]$Rows, [int]$Tries = 4, [scriptblock]$Wait = { param($n) Start-Sleep -Seconds (5 * $n) })
-    # Append `Rows` to `Path` on `Branch` and push: each try starts from the branch as fetched, so a push that lost a
-    # race is redone on top of the winner. Returns $true once the remote branch holds the commit.
+    param([string]$Clone, [string]$Branch, [string]$Path, [string[]]$Rows, [int]$Tries = 4, [scriptblock]$Wait = { param($n) Start-Sleep -Seconds (2 * $n) })
+    # Append `Rows` to `Path` on `Branch` and push: each try starts clean from the branch as fetched, so a push that
+    # lost a race is redone on top of the winner, and rows the branch already holds (a push that landed although the
+    # client saw an error) are not added again. Returns $true once the remote branch holds them all.
     for ($n = 1; $n -le $Tries; $n++) {
         try {
             Invoke-Git $Clone fetch -q origin $Branch | Out-Null
+            Invoke-Git $Clone reset -q --hard | Out-Null
+            Invoke-Git $Clone clean -fdq | Out-Null
             Invoke-Git $Clone checkout -q -B $Branch "origin/$Branch" | Out-Null
             $file = Join-Path $Clone $Path
-            if (-not (Test-Path -LiteralPath $file)) {
-                New-Item -ItemType Directory -Force -Path (Split-Path $file) | Out-Null
-                Set-Content -LiteralPath $file -Value $script:MeterHeader -Encoding utf8NoBOM
-            }
-            $have = [IO.File]::ReadAllText($file)
-            $add = ($Rows -join "`n") + "`n"
-            [IO.File]::WriteAllText($file, $(if ($have.EndsWith("`n")) { $have } else { "$have`n" }) + $add)
+            $have = if (Test-Path -LiteralPath $file) { [IO.File]::ReadAllText($file) } else { "$script:MeterHeader`n" }
+            $held = [Collections.Generic.HashSet[string]]::new([string[]]($have -split "`r?`n"), [StringComparer]::Ordinal)
+            $new = @($Rows | Where-Object { -not $held.Contains($_) })
+            if (-not $new.Count) { return $true }
+            New-Item -ItemType Directory -Force -Path (Split-Path $file) | Out-Null
+            $body = $(if ($have.EndsWith("`n")) { $have } else { "$have`n" }) + ($new -join "`n") + "`n"
+            [IO.File]::WriteAllText($file, $body)
             Invoke-Git $Clone add -- $Path | Out-Null
-            Invoke-Git $Clone commit -q -m "spend: append $($Rows.Count) meter reading(s)" | Out-Null
+            Invoke-Git $Clone commit -q -m "spend: append $($new.Count) meter reading(s)" | Out-Null
             Invoke-Git $Clone push -q origin "HEAD:$Branch" | Out-Null
             return $true
         }
@@ -615,31 +620,34 @@ function Push-MeterRows {
 
 function Invoke-MeterHistory {
     param([string]$ConfigDir, $Config, $ClaudeSource, [datetimeoffset]$Now, [scriptblock]$Wait)
+    # The scheduled task never overlaps itself (MultipleInstances IgnoreNew), so one run owns these files.
     $settings = Get-Prop $Config 'meterHistory'
     if ($null -eq $settings) { return }
     $statePath = Join-Path $ConfigDir 'meter-state.json'
     $pendingPath = Join-Path $ConfigDir 'meter-pending.csv'
-    $state = if (Test-Path -LiteralPath $statePath) { Get-Content -Raw -LiteralPath $statePath | ConvertFrom-Json } else { $null }
+    $state = try { Get-Content -Raw -LiteralPath $statePath -ErrorAction Stop | ConvertFrom-Json } catch { $null }
     # ConvertFrom-Json reads an ISO time as a DateTime: back to the ISO text the rows carry.
     $last = ConvertTo-IsoUtc (Get-Prop $state 'last_reading'); $pushed = ConvertTo-IsoUtc (Get-Prop $state 'last_push')
+    $save = { [ordered]@{ last_reading = $last; last_push = $pushed } | ConvertTo-Json | Set-Content -LiteralPath $statePath -Encoding utf8 }
     $rows = @(ConvertTo-MeterRows -ClaudeSource $ClaudeSource -After $last)
     if ($rows.Count) {
         Add-Content -LiteralPath $pendingPath -Value $rows -Encoding utf8NoBOM
         $last = [string](Get-Prop $ClaudeSource 'fetched_at')
+        & $save   # before any push, so a later failure cannot record the reading twice
     }
     $every = Get-Prop $settings 'pushEveryMinutes'; if ($null -eq $every) { $every = 60 }
     $pending = @(if (Test-Path -LiteralPath $pendingPath) { Get-Content -LiteralPath $pendingPath | Where-Object { $_ } })
     $due = -not $pushed -or ($Now - [datetimeoffset]$pushed).TotalMinutes -ge $every
-    if ($pending.Count -and $due) {
-        $push = @{ Clone = $settings.clone; Branch = $settings.branch; Path = $settings.path; Rows = $pending }
-        if ($Wait) { $push.Wait = $Wait }
-        if (Push-MeterRows @push) {
-            Remove-Item -LiteralPath $pendingPath
-            $pushed = ConvertTo-IsoUtc $Now
-        }
-        else { "$(ConvertTo-IsoUtc $Now) meter history: push failed; $($pending.Count) row(s) kept for the next try" | Add-Content (Join-Path $ConfigDir 'error.log') }
+    if (-not ($pending.Count -and $due)) { return }
+    $push = @{ Clone = $settings.clone; Branch = $settings.branch; Path = $settings.path; Rows = $pending }
+    if ($Wait) { $push.Wait = $Wait }
+    if (Push-MeterRows @push) {
+        $pushed = ConvertTo-IsoUtc $Now
+        & $save
+        # A pending file left behind is harmless: the branch's rows are not appended twice.
+        Remove-Item -LiteralPath $pendingPath -ErrorAction SilentlyContinue
     }
-    [ordered]@{ last_reading = $last; last_push = $pushed } | ConvertTo-Json | Set-Content -LiteralPath $statePath -Encoding utf8
+    else { "$(ConvertTo-IsoUtc $Now) meter history: push failed; $($pending.Count) row(s) kept for the next try" | Add-Content (Join-Path $ConfigDir 'error.log') }
 }
 
 Export-ModuleMember -Function ConvertTo-*, ConvertFrom-Base64Url, New-UsageKey, Protect-UsageJson, Unprotect-UsageJson, Get-WindowLabel, New-Wif*, Select-PlatformAuth, Get-WifKey, Merge-Source, Get-ErrorText, New-PublishPayload, Get-CollectDays, Get-ClaudePaceFrom, Set-ClaudePace, Select-ClaudeCredential, Get-CodexCredential, Save-AdminKey, Read-AdminKey, Invoke-AiUsageCollect, Push-MeterRows, Invoke-MeterHistory

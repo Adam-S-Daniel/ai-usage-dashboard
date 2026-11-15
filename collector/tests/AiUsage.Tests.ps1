@@ -679,6 +679,16 @@ Describe 'Meter history' {
             $settings.meterHistory.branch = 'data'
             Invoke-MeterHistory -ConfigDir $config -Config $settings -ClaudeSource $next -Now $now.AddMinutes(75) -Wait {}
             @((git -C $remote show 'data:spend/meter.csv') | Where-Object { $_ }).Count | Should -Be 7
+            # Rows the branch already holds are not appended again, and a dirty clone is cleaned first.
+            Set-Content -LiteralPath (Join-Path $clone 'spend/meter.csv') -Value 'leftover'
+            Push-MeterRows -Clone $clone -Branch data -Path 'spend/meter.csv' -Wait {} `
+                -Rows @('2026-11-15T12:05:00Z,seven_day,88,2026-11-16T17:00:00Z') | Should -Be $true
+            @((git -C $remote show 'data:spend/meter.csv') | Where-Object { $_ }).Count | Should -Be 7
+            # A corrupt state file is read as none.
+            Set-Content -LiteralPath (Join-Path $config 'meter-state.json') -Value '{"last_'
+            Invoke-MeterHistory -ConfigDir $config -Config $settings -ClaudeSource $next -Now $now.AddMinutes(200) -Wait {}
+            @((git -C $remote show 'data:spend/meter.csv') | Where-Object { $_ }).Count | Should -Be 7
+            (git -C $remote show 'data:spend/meter.csv' | Out-String) -match "`r" | Should -Be $false
         }
         finally { Remove-Item -Recurse -Force -LiteralPath $root -ErrorAction SilentlyContinue }
     }
