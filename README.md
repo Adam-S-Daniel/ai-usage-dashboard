@@ -49,6 +49,8 @@ A failed source publishes only a short fixed phrase and the source name (`claude
 
 The local `~/.config/ai-usage/usage.json` is plaintext compact JSON followed by a newline. The collector and installer read it with `Get-Content -Raw | ConvertFrom-Json`, which accepts compact and pretty JSON. The gist receives compact JSON encrypted in an envelope when a key is configured.
 
+`meterHistory` is optional: `{"clone": "<path>", "branch": "<branch>", "path": "<csv path>", "pushEveryMinutes": 60}`. With it, each run adds the Claude weekly and extra meter readings it has not recorded yet to `meter-pending.csv` in the config folder (one row each: `ts_utc,meter_name,percent,resets_at`). At most every `pushEveryMinutes`, it appends them to `path` on `branch` in the git clone at `clone` and pushes. A push that loses a race is redone on the freshly fetched branch, up to 4 times; rows stay pending until a push lands, and failures go to `error.log`. Use a clone that nothing else edits, with `user.name` and `user.email` set; the collector resets its branch to the remote's on each try. Only usage numbers and times are written, never the gist key. Name the repository only in `config.json`.
+
 ## Tests and CI
 
     node --test tests/*.test.mjs

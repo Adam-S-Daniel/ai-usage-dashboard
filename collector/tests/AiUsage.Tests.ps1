@@ -621,3 +621,65 @@ Describe 'Claude pacing from a manual reset' {
         $s.windows[1].Contains('paced_from') | Should -Be $false
     }
 }
+
+Describe 'Meter history' {
+    BeforeAll {
+        $script:Source = [ordered]@{
+            ok = $true; fetched_at = '2026-11-15T12:00:00Z'
+            windows = @(
+                [ordered]@{ id = 'five_hour'; used_pct = 10.0; resets_at = '2026-11-15T15:00:00Z' }
+                [ordered]@{ id = 'seven_day'; used_pct = 88.0; resets_at = '2026-11-16T17:00:00Z' }
+                [ordered]@{ id = 'seven_day_fable'; used_pct = 1.5; resets_at = '2026-11-16T17:00:00Z' })
+            other = @([ordered]@{ id = 'extra_meter'; used_pct = 100.0; resets_at = '2026-11-18T08:00:00Z' })
+        }
+    }
+
+    It 'turns a fresh reading into one row per weekly or extra meter' {
+        $rows = @(ConvertTo-MeterRows -ClaudeSource $script:Source)
+        $rows.Count | Should -Be 3
+        $rows[0] | Should -Be '2026-11-15T12:00:00Z,seven_day,88,2026-11-16T17:00:00Z'
+        $rows[1] | Should -Be '2026-11-15T12:00:00Z,seven_day_fable,1.5,2026-11-16T17:00:00Z'
+        $rows[2] | Should -Be '2026-11-15T12:00:00Z,extra_meter,100,2026-11-18T08:00:00Z'
+    }
+
+    It 'skips a failed, carried-forward or already recorded reading' {
+        $failed = [ordered]@{}; foreach ($k in $script:Source.Keys) { $failed[$k] = $script:Source[$k] }; $failed.ok = $false
+        @(ConvertTo-MeterRows -ClaudeSource $failed).Count | Should -Be 0
+        @(ConvertTo-MeterRows -ClaudeSource $script:Source -After '2026-11-15T12:00:00Z').Count | Should -Be 0
+        @(ConvertTo-MeterRows -ClaudeSource $script:Source -After '2026-11-15T11:55:00Z').Count | Should -Be 3
+    }
+
+    It 'appends pending rows to the branch and pushes, keeping them when the push fails' {
+        $root = Join-Path ([IO.Path]::GetTempPath()) ("meter-" + [guid]::NewGuid())
+        try {
+            $remote = Join-Path $root 'remote.git'; $seed = Join-Path $root 'seed'; $clone = Join-Path $root 'clone'
+            $config = Join-Path $root 'config'
+            New-Item -ItemType Directory -Force -Path $seed, $config | Out-Null
+            git init -q --bare $remote
+            git -C $seed init -q -b data; git -C $seed config user.email 'test@example.com'; git -C $seed config user.name test
+            New-Item -ItemType Directory -Path (Join-Path $seed 'spend') | Out-Null
+            Set-Content -LiteralPath (Join-Path $seed 'spend/meter.csv') -Value 'ts_utc,meter_name,percent,resets_at' -Encoding utf8NoBOM
+            git -C $seed add -A; git -C $seed commit -q -m seed; git -C $seed push -q $remote data
+            git clone -q -b data $remote $clone 2>$null
+            git -C $clone config user.email 'test@example.com'; git -C $clone config user.name test
+            $settings = [pscustomobject]@{ meterHistory = [pscustomobject]@{ clone = $clone; branch = 'data'; path = 'spend/meter.csv'; pushEveryMinutes = 60 } }
+            $now = [datetimeoffset]'2026-11-15T12:01:00Z'
+            Invoke-MeterHistory -ConfigDir $config -Config $settings -ClaudeSource $script:Source -Now $now -Wait {}
+            $lines = @((git -C $remote show 'data:spend/meter.csv') | Where-Object { $_ })
+            $lines.Count | Should -Be 4
+            Test-Path (Join-Path $config 'meter-pending.csv') | Should -Be $false
+            # Within the hour, a new reading waits in the pending file.
+            $next = [ordered]@{}; foreach ($k in $script:Source.Keys) { $next[$k] = $script:Source[$k] }; $next.fetched_at = '2026-11-15T12:05:00Z'
+            Invoke-MeterHistory -ConfigDir $config -Config $settings -ClaudeSource $next -Now $now.AddMinutes(4) -Wait {}
+            @(Get-Content (Join-Path $config 'meter-pending.csv')).Count | Should -Be 3
+            # A failing push keeps the pending rows.
+            $settings.meterHistory.branch = 'missing'
+            Invoke-MeterHistory -ConfigDir $config -Config $settings -ClaudeSource $next -Now $now.AddMinutes(70) -Wait {}
+            @(Get-Content (Join-Path $config 'meter-pending.csv')).Count | Should -Be 3
+            $settings.meterHistory.branch = 'data'
+            Invoke-MeterHistory -ConfigDir $config -Config $settings -ClaudeSource $next -Now $now.AddMinutes(75) -Wait {}
+            @((git -C $remote show 'data:spend/meter.csv') | Where-Object { $_ }).Count | Should -Be 7
+        }
+        finally { Remove-Item -Recurse -Force -LiteralPath $root -ErrorAction SilentlyContinue }
+    }
+}
