@@ -185,7 +185,7 @@ Describe 'Workload identity federation' {
     }
     It 'signs a short-lived RS256 assertion that verifies with the public key' {
         $rsa = [System.Security.Cryptography.RSA]::Create(2048)
-        $wif = @{ issuer = 'https://boxy.ai-usage.internal'; subject = 'ai-usage-collector'; audience = 'https://api.anthropic.com' }
+        $wif = @{ issuer = 'https://build-host.ai-usage.internal'; subject = 'ai-usage-collector'; audience = 'https://api.anthropic.com' }
         $jwt = New-WifAssertion -Wif $wif -Rsa $rsa -Now $script:Now
         $parts = $jwt.Split('.')
         $parts.Count | Should -Be 3
@@ -194,7 +194,7 @@ Describe 'Workload identity federation' {
         $c = [Text.Encoding]::UTF8.GetString((& $dec $parts[1])) | ConvertFrom-Json
         $h.alg | Should -Be 'RS256'
         $h.kid | Should -Be (ConvertTo-Jwk -Rsa $rsa).kid
-        $c.iss | Should -Be 'https://boxy.ai-usage.internal'
+        $c.iss | Should -Be 'https://build-host.ai-usage.internal'
         $c.sub | Should -Be 'ai-usage-collector'
         $c.aud | Should -Be 'https://api.anthropic.com'
         $c.exp | Should -Be ($script:Now.ToUnixTimeSeconds() + 120)
