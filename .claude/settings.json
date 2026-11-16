@@ -6,16 +6,6 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/fleet-memory.sh\"",
-            "timeout": 30
-          }
-        ]
-      },
-      {
-        "matcher": "startup|resume|fork",
-        "hooks": [
-          {
-            "type": "command",
             "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/skills-bootstrap.sh\"",
             "timeout": 90
           }
@@ -30,18 +20,6 @@
             "type": "command",
             "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/agent-checks-guard.sh\"",
             "timeout": 10
-          }
-        ]
-      }
-    ],
-    "Stop": [
-      {
-        "matcher": "*",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/guidance-load-record.sh\"",
-            "timeout": 20
           }
         ]
       }
