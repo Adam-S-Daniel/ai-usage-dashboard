@@ -1,0 +1,21 @@
+# Dependabot for this repo: github-actions only. Each action is named by
+# exact release tag in .github/workflows/*.yml and locked to a commit in
+# .github/workflows/actions.lock (Dependabot updates both). Bumps land
+# unattended through .github/workflows/dependabot-auto-merge.yml once CI is
+# green.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: daily
+    # A third-party release must be 7 days old before Dependabot opens its
+    # PR (cooldown applies to version updates only; security updates skip
+    # it). GitHub's github-actions ecosystem supports only `default-days`:
+    # adding any `semver-*-days` key makes GitHub reject the whole file.
+    cooldown:
+      default-days: 7
+      # Our own actions skip that wait. An Adam-S-Daniel or jodidaniel
+      # action is this account's own code, gated by its own required checks
+      # before a tag exists, so the cooling-off adds nothing.
+      exclude: ["Adam-S-Daniel/*", "jodidaniel/*"]
