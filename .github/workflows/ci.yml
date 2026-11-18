@@ -50,7 +50,7 @@ jobs:
       - name: No salient changes
         if: steps.changes.outputs.run != 'true'
         run: echo 'No relevant changes; required check succeeds.'
-      - uses: actions/setup-node@v7.0.0
+      - uses: actions/setup-node@v7.1.0
         if: steps.changes.outputs.run == 'true'
         with:
           node-version: '24'
