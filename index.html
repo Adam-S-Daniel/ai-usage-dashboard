@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'sha256-KMv2yCrb06xyY3dI+IUt0X1iPHQaW6H9uRvx30wlJ+M='; connect-src https://api.github.com https://gist.githubusercontent.com; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'sha256-+8+j1P7vs7DRZAOJ+LetYd9bjBVkF2sw6sjX2bwdFfE='; connect-src https://api.github.com https://gist.githubusercontent.com; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'">
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-title" content="AI Usage">
@@ -55,6 +55,8 @@ th{color:var(--ink2);font-weight:500}
 code{font-size:13px;word-break:break-all}
 .other{margin-top:14px;border-top:1px solid var(--grid);padding-top:8px}
 .other .bar{height:8px}
+.tick.stop{background:var(--crit)}
+.sec{margin-top:14px;border-top:1px solid var(--grid);padding-top:8px}
 </style>
 </head>
 <body>
@@ -189,6 +191,78 @@ function platformCard(src) {
   return `<section class="card"><h2>Claude platform (API)</h2>${srcNote(src)}${body}</section>`;
 }
 
+// Loop guards: the self-improvement loop's allowance guard, as printed by the collector's loopStatus command (schema 1).
+// Allowance points are approximate, so the text says so. Every value is validated before it gets here.
+const VERDICTS = { open: ["Open", "good"], refresh: ["Refresh fire allowed", "warn"], pace_probe: ["Pace probe allowed", "warn"], pace_hold: ["Pace hold", "crit"], session_hold: ["5-hour stop", "crit"], cap_full: ["Cap full", "crit"], error: ["Guard error", "crit"] };
+const LOOP_STALE_MIN = 20;
+const f1 = (n) => n.toFixed(1), g1 = (n) => String(+n.toFixed(1));
+const clampPct = (n) => Math.max(0, Math.min(100, n));
+const localTime = (t) => new Date(t).toLocaleString([], { weekday: "short", hour: "numeric", minute: "2-digit" });
+const localDay = (t) => new Date(t).toLocaleDateString([], { year: "numeric", month: "short", day: "numeric" });
+const hasOwn = (o, k) => Object.prototype.hasOwnProperty.call(o, k);
+
+function loopPace(p, gp, now) {
+  const used = clampPct(p.used_pct), ahead = Math.abs(p.under_line_points);
+  const verdict = p.ahead ? `${f1(ahead)} points ahead` : `${f1(ahead)} points under`;
+  const cls = p.ahead ? "warn" : "good";
+  const src = p.source === "live" ? "Live reading" : p.source === "guard" ? "The guard's reading" : `Reading: ${esc(p.source)}`;
+  const gp2 = gp && (!p || gp.used_pct !== p.used_pct) ? `<div class="sub">Guard's reading: ${g1(gp.used_pct)}% at ${esc(localTime(gp.at))}</div>` : "";
+  return `<div class="meter"><div class="row"><span>Weekly pace</span><span class="big">${used.toFixed(0)}%</span></div>
+    <div class="bar" role="img" aria-label="${used.toFixed(0)}% of the week's allowance used, pace line ${f1(p.line_pct)}%, stop ${g1(p.stop_pct)}%"><div class="fill" style="width:${used}%"></div><div class="tick" style="left:calc(${clampPct(p.line_pct)}% - 1px)"></div><div class="tick stop" style="left:calc(${clampPct(p.stop_pct)}% - 1px)"></div></div>
+    <div class="sub">${g1(p.used_pct)}% used, pace line ${f1(p.line_pct)}% (${g1(p.stop_pct)}% stop × ${p.elapsed_pct.toFixed(0)}% of week gone): <span class="pace ${cls}">${verdict}</span></div>
+    <div class="sub">${src} at ${esc(localTime(p.at))}</div>${gp2}
+    <div class="key"><span><span class="sw" style="background:var(--used)"></span>Used</span><span><span class="sw line"></span>Pace line</span><span><span class="sw" style="background:var(--crit)"></span>Stop</span></div></div>`;
+}
+
+function loopSpend(l) {
+  const pct = l.cap_points > 0 ? clampPct((l.used_points / l.cap_points) * 100) : l.used_points > 0 ? 100 : 0;
+  return `<div class="meter"><div class="row"><span>Loop spend</span><span class="big">≈${f1(l.used_points)}</span></div>
+    <div class="bar" role="img" aria-label="Approximately ${f1(l.used_points)} of ${g1(l.cap_points)} points used"><div class="fill" style="width:${pct}%"></div></div>
+    <div class="sub">≈${f1(l.used_points)} of ${g1(l.cap_points)} points used since the weekly reset (evals ${f1(l.eval_spent_points)} incl. ${f1(l.eval_pending_points)} pending, scheduled loop jobs ${f1(l.loop_jobs_points)}); room ≈${f1(l.room_points)}</div>
+    <div class="sub">Approximate allowance points. Project threads are not counted.</div></div>`;
+}
+
+function loopForecast(f, error) {
+  let body = "";
+  if (f) {
+    const c = f.catch_up_date || {};
+    const catchUp = c.central == null ? "Not at current capacity"
+      : `${esc(localDay(c.central))}` + (c.fast != null && c.slow != null ? ` (${esc(localDay(c.fast))} to ${esc(localDay(c.slow))})` : "");
+    const rows = (f.tasks || []).map((t) => `<tr><td>${esc(t.task)}</td><td>${f1(t.points_per_week)}</td></tr>`).join("");
+    const tasks = rows ? `<div class="scroll"><table><tr><th>Task</th><th>Points per week</th></tr>${rows}</table></div>`
+      : `<div class="sub">Per-task points: see the project dashboard's routines table.</div>`;
+    body = `<div class="row"><span>Catch-up</span><span class="big">${catchUp}</span></div>
+      <div class="sub">Keep-up ≈${f1(f.keep_up_points_per_week)} points/week · eval capacity ≈${f1(f.capacity_points_per_week)} points/week · non-eval use ≈${f1(f.non_eval_points_per_week)} points/week · open subjects ${esc(f.open_subjects)}</div>
+      ${tasks}<div class="sub">Forecast as of ${esc(localTime(f.as_of))}</div>`;
+  }
+  const e = error ? `<div class="sub warn">▲ Forecast: ${esc(error)}</div>` : "";
+  return body || e ? `<div class="sec"><h2>Forecast</h2>${body}${e}</div>` : "";
+}
+
+function loopCard(src, now) {
+  const st = src.status;
+  if (!st) return `<section class="card"><h2>Loop guards</h2>${srcNote(src)}</section>`;
+  const g = st.guard, v = hasOwn(VERDICTS, g.verdict) ? VERDICTS[g.verdict] : ["Unknown", "crit"];
+  const icon = v[1] === "good" ? "✓" : v[1] === "warn" ? "▲" : "●";
+  let body = `<div class="meter"><div class="row"><span class="big ${v[1]}">${icon} ${v[0]}</span></div><div class="sub">${esc(g.why)}</div></div>`;
+  if (st.pace) body += loopPace(st.pace, st.guard_pace, now);
+  if (st.session) {
+    const x = st.session;
+    body += `<div class="sec"><div class="row"><span>5-hour stop</span><span>${x.stop_pct == null
+      ? esc(x.plan ? `Off: the ${x.plan} plan has no 5-hour window` : "Off: no 5-hour window")
+      : `Stop at ${g1(x.stop_pct)}%` + (x.hold ? ` · <span class="pace crit">Holding</span>` : "")}</span></div></div>`;
+  }
+  if (st.loop) body += loopSpend(st.loop);
+  if (st.week && st.week.resets_at) {
+    const left = new Date(st.week.resets_at).getTime() - now;
+    body += `<div class="sec"><div class="row"><span>Next weekly reset</span><span>${esc(localTime(st.week.resets_at))} · ${left > 0 ? "in " + dur(left) : "just reset"}</span></div></div>`;
+  }
+  body += loopForecast(st.forecast, st.forecast_error);
+  const age = now - new Date(st.computed_at).getTime(), stale = age > LOOP_STALE_MIN * 60000;
+  body += `<div class="sub ${stale ? "warn" : ""}" style="margin-top:10px">${stale ? "▲ " : ""}Computed ${dur(age)} ago</div>`;
+  return `<section class="card"><h2>Loop guards</h2>${srcNote(src)}${body}</section>`;
+}
+
 // A render failure must not leave a blank page: drop the data and show an error state.
 function show() {
   try { render(); return true; }
@@ -223,7 +297,7 @@ function render() {
   app.innerHTML =
     (err ? `<section class="card banner"><div class="sub warn">▲ Refresh failed: ${esc(err)}</div></section>` : "") +
     (stale ? `<section class="card banner"><div class="sub warn">▲ No update in ${dur(age)}. The laptop may be asleep or offline.</div></section>` : "") +
-    limitCard("Claude", s.claude, now, true) + limitCard("ChatGPT (Codex limits)", s.codex, now) + platformCard(s.platform);
+    limitCard("Claude", s.claude, now, true) + limitCard("ChatGPT (Codex limits)", s.codex, now) + (s.loop ? loopCard(s.loop, now) : "") + platformCard(s.platform);
 }
 
 document.addEventListener("click", (e) => {
@@ -352,6 +426,37 @@ function validateUsage(doc) {
     });
     need(models.size <= MAX_MODELS, p + ".models");
   });
+  src("loop", (s, p) => {
+    if (s.status == null) return;
+    const st = s.status, q = p + ".status";
+    need(obj(st) && st.schema === 1, q + ".schema");
+    need(when(st.computed_at), q + ".computed_at");
+    const n = (v, r) => need(num(v), q + "." + r), nn = (v, r) => { if (v != null) n(v, r); };
+    need(obj(st.guard) && typeof st.guard.verdict === "string" && st.guard.verdict.length <= 40 && errText(st.guard.why), q + ".guard");
+    if (st.week != null) { need(obj(st.week), q + ".week"); opt(st.week.window_start, when, q + ".week.window_start"); opt(st.week.resets_at, when, q + ".week.resets_at"); }
+    if (st.session != null) {
+      need(obj(st.session), q + ".session");
+      opt(st.session.plan, str, q + ".session.plan"); nn(st.session.stop_pct, "session.stop_pct");
+    }
+    for (const k of ["pace", "guard_pace"]) {
+      const x = st[k]; if (x == null) continue;
+      need(obj(x) && str(x.source) && when(x.at) && typeof x.ahead === "boolean", `${q}.${k}`);
+      for (const f of ["used_pct", "elapsed_pct", "line_pct", "stop_pct", "under_line_points"]) n(x[f], `${k}.${f}`);
+    }
+    if (st.loop != null) {
+      need(obj(st.loop), q + ".loop");
+      for (const f of ["eval_spent_points", "eval_pending_points", "loop_jobs_points", "used_points", "cap_points", "room_points"]) n(st.loop[f], "loop." + f);
+    }
+    if (st.forecast != null) {
+      const f = st.forecast;
+      need(obj(f) && when(f.as_of), q + ".forecast");
+      for (const k of ["keep_up_points_per_week", "capacity_points_per_week", "non_eval_points_per_week"]) n(f[k], "forecast." + k);
+      need(num(f.open_subjects) && f.open_subjects >= 0, q + ".forecast.open_subjects");
+      if (f.catch_up_date != null) { need(obj(f.catch_up_date), q + ".forecast.catch_up_date"); for (const k of ["central", "fast", "slow"]) opt(f.catch_up_date[k], when, `${q}.forecast.catch_up_date.${k}`); }
+      list(f.tasks, q + ".forecast.tasks", 50, (t, r) => { need(str(t.task), r + ".task"); need(num(t.points_per_week), r + ".points_per_week"); });
+    }
+    opt(st.forecast_error, errText, q + ".forecast_error");
+  });
   return doc;
 }
 
@@ -374,7 +479,18 @@ function demo() {
     codex: { ok: false, error: "Sample of a failed fetch", fetched_at: iso(-3 * H), plan: "plus", windows: [
       { label: "Session (5 h)", used_pct: 8, resets_at: iso(1 * H), period_seconds: 18000 },
       { label: "Week", used_pct: 96, resets_at: iso(20 * H), period_seconds: 604800 }] },
-    platform: { ok: true, usage, costs } } };
+    platform: { ok: true, usage, costs },
+    loop: { ok: true, fetched_at: iso(-12e4), status: { schema: 1, computed_at: iso(-12e4),
+      week: { window_start: iso(-94 * H), resets_at: iso(74 * H) }, session: { plan: "ultra", stop_pct: null, hold: false },
+      guard: { ok: true, verdict: "pace_hold", why: "The account is ahead of its weekly pace line: no fire goes.", fits: 0, pace_hold: true, pace_probe: false, session_hold: false },
+      pace: { source: "live", used_pct: 76, at: iso(-12e4), elapsed_pct: 56, line_pct: 44.8, stop_pct: 80, ahead: true, under_line_points: -31.2 },
+      guard_pace: { source: "guard", used_pct: 74, at: iso(-4.5 * H), elapsed_pct: 56, line_pct: 44.8, stop_pct: 80, ahead: true, under_line_points: -29.2 },
+      loop: { eval_spent_points: 13.3, eval_pending_points: 0, eval_committed_points: 13.3, loop_jobs_points: 8.9, used_points: 22.2, cap_points: 25, eval_cap_points: 16.1, room_points: 0, eval_runs: 89, fires: 89 },
+      forecast: { as_of: iso(-30 * 6e4), open_subjects: 21, backlog_points: 26, catch_up_weeks: { central: 3.2, fast: 1.5, slow: null },
+        catch_up_date: { central: iso(538 * H), fast: iso(252 * H), slow: null }, keep_up_points_per_week: 6.2, capacity_points_per_week: 14,
+        eval_cap_points_per_week: 16.1, loop_jobs_points_per_week: 8.9, non_eval_points_per_week: 60, pace_hold_modeled: true,
+        tasks: [{ task: "Sample daily task", in_loop: true, model: "sample-model", fires_per_week: 7, points_per_week: 5.1 }] },
+      forecast_error: null } } } };
 }
 
 // Another gist is about to be shown: nothing of the previous one (or of #demo) may linger on screen.

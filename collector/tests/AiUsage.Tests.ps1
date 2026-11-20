@@ -154,7 +154,7 @@ Describe 'Get-CodexCredential' {
 Describe 'Admin key storage' {
     It 'round-trips the key through an encrypted file without storing it in plain text' {
         $dir = Join-Path ([IO.Path]::GetTempPath()) ([guid]::NewGuid()); New-Item -ItemType Directory $dir | Out-Null
-        $secure = ConvertTo-SecureString 'sk-ant-admin01-TESTVALUE' -AsPlainText -Force
+        $secure = [securestring]::new(); foreach ($c in 'sk-ant-admin01-TESTVALUE'.ToCharArray()) { $secure.AppendChar($c) }
         Save-AdminKey -ConfigDir $dir -Key $secure
         Read-AdminKey -ConfigDir $dir | Should -Be 'sk-ant-admin01-TESTVALUE'
         ((Get-Content -Raw (Join-Path $dir 'adminkey.xml')) -match 'sk-ant-admin01') | Should -Be $false
@@ -691,5 +691,91 @@ Describe 'Meter history' {
             (git -C $remote show 'data:spend/meter.csv' | Out-String) -match "`r" | Should -Be $false
         }
         finally { Remove-Item -Recurse -Force -LiteralPath $root -ErrorAction SilentlyContinue }
+    }
+}
+
+Describe 'Loop status source' {
+    BeforeAll {
+        $script:LoopSettings = '{"command":["status-tool","collect"],"timeoutSeconds":30}' | ConvertFrom-Json
+        $script:LoopClaude = [ordered]@{
+            ok = $true; fetched_at = '2026-11-20T18:44:35Z'
+            windows = @(
+                [ordered]@{ id = 'five_hour'; used_pct = 5.0; resets_at = '2026-11-20T22:00:00Z' }
+                [ordered]@{ id = 'seven_day'; used_pct = 76.5; resets_at = '2026-11-23T17:00:00Z' })
+        }
+        $script:LoopDoc = '{"schema":1,"computed_at":"2026-11-20T18:50:00Z","guard":{"ok":true,"verdict":"open"}}'
+        $script:LoopSeen = $null
+        $script:LoopRun = { param($Command, $TimeoutSeconds) $script:LoopSeen = @{ Command = $Command; Timeout = $TimeoutSeconds }; @{ ExitCode = 0; Output = $script:LoopDoc } }
+    }
+    It 'appends the Claude weekly reading as arguments' {
+        $s = Get-LoopSource -Now $script:Now -Settings $script:LoopSettings -ClaudeSource $script:LoopClaude -Invoke $script:LoopRun
+        ($script:LoopSeen.Command -join ' ') | Should -Be 'status-tool collect --week-used 76.5 --week-at 2026-11-20T18:44:35Z --week-resets 2026-11-23T17:00:00Z'
+        $script:LoopSeen.Timeout | Should -Be 30
+        $s.ok | Should -Be $true
+        $s.fetched_at | Should -Be '2026-10-02T12:00:00Z'
+        $s.status.guard.verdict | Should -Be 'open'
+    }
+    It 'adds no arguments when the Claude source failed or has no weekly window' {
+        $failed = [ordered]@{ ok = $false; error = 'claude: HTTP 401'; windows = $script:LoopClaude.windows }
+        $none = [ordered]@{ ok = $true; fetched_at = '2026-11-20T18:44:35Z'; windows = @($script:LoopClaude.windows[0]) }
+        foreach ($c in $failed, $none, $null) {
+            $null = Get-LoopSource -Now $script:Now -Settings $script:LoopSettings -ClaudeSource $c -Invoke $script:LoopRun
+            ($script:LoopSeen.Command -join ' ') | Should -Be 'status-tool collect'
+        }
+    }
+    It 'defaults the timeout to 120 seconds' {
+        $null = Get-LoopSource -Now $script:Now -Settings ('{"command":["x"]}' | ConvertFrom-Json) -ClaudeSource $null -Invoke $script:LoopRun
+        $script:LoopSeen.Timeout | Should -Be 120
+    }
+    It 'throws a fixed message on a non-zero exit, without the output' {
+        $run = { param($Command, $TimeoutSeconds) @{ ExitCode = 3; Output = 'secret detail' } }
+        $msg = try { Get-LoopSource -Now $script:Now -Settings $script:LoopSettings -ClaudeSource $null -Invoke $run; 'no error' } catch { $_.Exception.Message }
+        $msg | Should -Be 'loop: status command failed (exit 3)'
+        (Get-ErrorText ([Exception]::new($msg)) 'loop') | Should -Be 'loop: status command failed (exit 3)'
+    }
+    It 'rejects oversize output, a wrong schema and text that is not JSON' {
+        $cases = @(
+            @{ Out = ('{"schema":1,"pad":"' + ('x' * 262144) + '"}'); Want = 'loop: status output is too large' }
+            @{ Out = '{"schema":2}'; Want = 'loop: status output is not a schema 1 document' }
+            @{ Out = '{"computed_at":"x"}'; Want = 'loop: status output is not a schema 1 document' }
+            @{ Out = 'not json'; Want = 'loop: status output is not a schema 1 document' })
+        foreach ($c in $cases) {
+            $out = $c.Out
+            $run = { param($Command, $TimeoutSeconds) @{ ExitCode = 0; Output = $out } }.GetNewClosure()
+            $msg = try { Get-LoopSource -Now $script:Now -Settings $script:LoopSettings -ClaudeSource $null -Invoke $run; 'no error' } catch { $_.Exception.Message }
+            $msg | Should -Be $c.Want
+        }
+    }
+    It 'rejects a missing command' {
+        $msg = try { Get-LoopSource -Now $script:Now -Settings ('{"timeoutSeconds":5}' | ConvertFrom-Json) -ClaudeSource $null -Invoke $script:LoopRun; 'no error' } catch { $_.Exception.Message }
+        (Get-ErrorText ([Exception]::new($msg)) 'loop') | Should -Be 'loop: loopStatus.command in config.json is invalid; see the README'
+    }
+    It 'keeps the previous status with the error through Merge-Source' {
+        $prev = [ordered]@{ ok = $true; fetched_at = '2026-10-02T11:00:00Z'; status = [ordered]@{ schema = 1 } }
+        $m = Merge-Source -Previous $prev -Result @{ ok = $false; error = 'loop: status command failed (exit 1)' }
+        $m.ok | Should -Be $false
+        $m.status.schema | Should -Be 1
+        $m.error | Should -Be 'loop: status command failed (exit 1)'
+    }
+    It 'publishes a loop source only when loopStatus is configured' {
+        # A child pwsh with an empty HOME: no logins or keys, so every other source fails before any network call.
+        $home2 = Join-Path ([IO.Path]::GetTempPath()) ("loop-collect-" + [guid]::NewGuid().ToString('N'))
+        New-Item -ItemType Directory -Path "$home2/cfg" | Out-Null
+        try {
+            $run = {
+                param($extra)
+                Set-Content -LiteralPath "$home2/cfg/config.json" -Value ('{"gistId":"x"' + $extra + '}')
+                $env:HOME = $home2
+                $mod = (Resolve-Path "$PSScriptRoot/../AiUsage.psm1").Path
+                $json = pwsh -NoProfile -Command "Import-Module '$mod'; Invoke-AiUsageCollect -ConfigDir '$home2/cfg' -NoPublish"
+                ($json -join '') | ConvertFrom-Json
+            }
+            $without = & $run ''
+            $without.sources.PSObject.Properties.Name -contains 'loop' | Should -Be $false
+            $with = & $run ',"loopStatus":{"command":["loop-status-tool-that-does-not-exist"]}'
+            $with.sources.loop.ok | Should -Be $false
+            $with.sources.loop.error | Should -Be 'loop: request failed'
+        }
+        finally { Remove-Item -LiteralPath $home2 -Recurse -Force -ErrorAction SilentlyContinue }
     }
 }

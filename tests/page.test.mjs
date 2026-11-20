@@ -758,3 +758,98 @@ test("pace: a paced_from that is not a date is rejected", async () => {
   const p = await boot({ hash: "#" + A, gists: { [A]: doc } });
   assert.match(p.app(), /malformed: sources\.claude\.windows\[0\]\.paced_from/);
 });
+
+// Loop guards: the collector's loopStatus document (schema 1), invented numbers shaped like the real one.
+const loopStatus = () => ({
+  schema: 1, computed_at: iso(-5 * 6e4),
+  week: { window_start: iso(-4 * 864e5), resets_at: iso(2 * 864e5 + 22 * 36e5) },
+  session: { plan: "ultra", stop_pct: null, hold: false },
+  guard: { ok: true, verdict: "pace_hold", why: "The account is ahead of its weekly pace line: no fire goes.", fits: 0, pace_hold: true, pace_probe: false, session_hold: false },
+  pace: { source: "live", used_pct: 76, at: iso(-6e4), elapsed_pct: 58.23, line_pct: 46.587, stop_pct: 80, ahead: true, under_line_points: -29.413 },
+  guard_pace: { source: "guard", used_pct: 74, at: iso(-4 * 36e5), elapsed_pct: 58.23, line_pct: 46.587, stop_pct: 80, ahead: true, under_line_points: -27.413 },
+  loop: { eval_spent_points: 13.28, eval_pending_points: 0, eval_committed_points: 13.28, loop_jobs_points: 8.927, used_points: 22.2075, cap_points: 25, eval_cap_points: 16.07, room_points: 0, eval_runs: 89, fires: 89 },
+  forecast: { as_of: iso(-5 * 6e4), open_subjects: 21, backlog_points: 26.03, catch_up_weeks: { central: null, fast: null, slow: null }, catch_up_date: { central: null, fast: null, slow: null },
+    keep_up_points_per_week: 6.18, capacity_points_per_week: 0, eval_cap_points_per_week: 0, loop_jobs_points_per_week: 8.93, non_eval_points_per_week: 108.28, pace_hold_modeled: true, tasks: [] },
+  forecast_error: null,
+});
+const loopDoc = (status = loopStatus(), extra = {}) => { const d = validDoc(); d.sources.loop = { ok: true, fetched_at: iso(-6e4), status, ...extra }; return d; };
+const loopApp = async (doc) => (await boot({ hash: "#" + A, gists: { [A]: doc } })).app();
+
+test("loop-a: the sample renders verdict, pace, 5-hour stop, spend, reset, forecast and footer", async () => {
+  const app = await loopApp(loopDoc());
+  assert.match(app, /<h2>Loop guards<\/h2>/);
+  assert.match(app, /big crit">● Pace hold<\/span>/);
+  assert.match(app, /The account is ahead of its weekly pace line: no fire goes\./);
+  assert.match(app, /76% used, pace line 46\.6% \(80% stop × 58% of week gone\): <span class="pace warn">29\.4 points ahead<\/span>/);
+  assert.match(app, /Live reading at /);
+  assert.match(app, /Guard's reading: 74% at /);
+  assert.match(app, /Off: the ultra plan has no 5-hour window/);
+  assert.match(app, /≈22\.2 of 25 points used since the weekly reset \(evals 13\.3 incl\. 0\.0 pending, scheduled loop jobs 8\.9\); room ≈0\.0/);
+  assert.match(app, /Project threads are not counted\./);
+  assert.match(app, /Next weekly reset[\s\S]*in 2 d 22 h/);
+  assert.match(app, /Not at current capacity/);
+  assert.match(app, /Keep-up ≈6\.2 points\/week · eval capacity ≈0\.0 points\/week · non-eval use ≈108\.3 points\/week · open subjects 21/);
+  assert.match(app, /Per-task points: see the project dashboard's routines table\./);
+  assert.match(app, /Forecast as of /);
+  assert.match(app, /Computed 5 min ago/);
+  assert.doesNotMatch(app, /sub warn" style/);
+});
+
+test("loop-b: the section is hidden when the document has no loop source", async () => {
+  assert.doesNotMatch(await loopApp(validDoc()), /Loop guards/);
+});
+
+test("loop-c: each verdict maps to its label and color", async () => {
+  const want = { open: ["Open", "good"], refresh: ["Refresh fire allowed", "warn"], pace_probe: ["Pace probe allowed", "warn"], pace_hold: ["Pace hold", "crit"],
+    session_hold: ["5-hour stop", "crit"], cap_full: ["Cap full", "crit"], error: ["Guard error", "crit"], "__proto__": ["Unknown", "crit"] };
+  for (const [verdict, [label, cls]] of Object.entries(want)) {
+    const st = loopStatus(); st.guard.verdict = verdict;
+    const app = await loopApp(loopDoc(st));
+    assert.match(app, new RegExp(`big ${cls}">. ${label}</span>`), verdict);
+  }
+});
+
+test("loop-d: a forecast with dates shows the central date and range; tasks make a table; the error is a warning", async () => {
+  const st = loopStatus();
+  Object.assign(st.forecast, { catch_up_date: { central: iso(30 * 864e5), fast: iso(20 * 864e5), slow: iso(50 * 864e5) },
+    tasks: [{ task: "<b>x</b>", in_loop: true, model: "m", fires_per_week: 3, points_per_week: 4.5 }] });
+  st.forecast_error = "forecast <i>partial</i>";
+  const app = await loopApp(loopDoc(st));
+  assert.doesNotMatch(app, /Not at current capacity/);
+  assert.match(app, /Catch-up<\/span><span class="big">[^<]+ \(.+ to .+\)<\/span>/);
+  assert.match(app, /<td>&lt;b&gt;x&lt;\/b&gt;<\/td><td>4\.5<\/td>/);
+  assert.doesNotMatch(app, /Per-task points/);
+  assert.match(app, /▲ Forecast: forecast &lt;i&gt;partial&lt;\/i&gt;/);
+  assert.doesNotMatch(app, /<b>x|<i>partial/);
+});
+
+test("loop-e: under the line, a 5-hour stop with a hold, and a stale computation", async () => {
+  const st = loopStatus();
+  Object.assign(st.pace, { used_pct: 40, under_line_points: 6.5, ahead: false });
+  st.guard_pace = null;
+  st.session = { plan: "max", stop_pct: 90, hold: true };
+  st.computed_at = iso(-25 * 6e4);
+  const app = await loopApp(loopDoc(st));
+  assert.match(app, /<span class="pace good">6\.5 points under<\/span>/);
+  assert.doesNotMatch(app, /Guard's reading/);
+  assert.match(app, /Stop at 90%[\s\S]*Holding/);
+  assert.match(app, /class="sub warn" style="margin-top:10px">▲ Computed 25 min ago/);
+});
+
+test("loop-f: the guard error shape (no pace, loop, session, week or forecast) renders", async () => {
+  const st = { schema: 1, computed_at: iso(-6e4), guard: { ok: false, verdict: "error", why: "state unreadable", fits: 0 } };
+  const app = await loopApp(loopDoc(st));
+  assert.match(app, /Guard error/);
+  assert.match(app, /state unreadable/);
+  assert.doesNotMatch(app, /Weekly pace|Loop spend|Next weekly reset|Forecast<|malformed/);
+});
+
+test("loop-g: a failed loop source keeps the previous status and shows the error; a wrong schema is rejected", async () => {
+  const app = await loopApp(loopDoc(loopStatus(), { ok: false, error: "loop: status command failed (exit 1)" }));
+  assert.match(app, /▲ loop: status command failed \(exit 1\)/);
+  assert.match(app, /Pace hold/);
+  const st = loopStatus(); st.schema = 2;
+  assert.match(await loopApp(loopDoc(st)), /usage\.json is malformed: sources\.loop\.status\.schema/);
+  const bad = loopStatus(); bad.loop.used_points = "<img src=x>";
+  assert.match(await loopApp(loopDoc(bad)), /malformed: sources\.loop\.status\.loop\.used_points/);
+});
