@@ -1,21 +1,33 @@
-# Dependabot for this repo: github-actions only. Each action is named by
-# exact release tag in .github/workflows/*.yml and locked to a commit in
-# .github/workflows/actions.lock (Dependabot updates both). Bumps land
-# unattended through .github/workflows/dependabot-auto-merge.yml once CI is
-# green.
+# Managed by _agent-guidance's templates/dependabot/; overwritten on drift, so
+# change the template, not this copy. Why the groups and the ignore:
+# https://github.com/Adam-S-Daniel/_agent-guidance/blob/main/docs/reference/dependabot-grouping.md
 version: 2
 updates:
   - package-ecosystem: github-actions
     directory: "/"
     schedule:
       interval: daily
-    # A third-party release must be 7 days old before Dependabot opens its
-    # PR (cooldown applies to version updates only; security updates skip
-    # it). GitHub's github-actions ecosystem supports only `default-days`:
-    # adding any `semver-*-days` key makes GitHub reject the whole file.
     cooldown:
       default-days: 7
-      # Our own actions skip that wait. An Adam-S-Daniel or jodidaniel
-      # action is this account's own code, gated by its own required checks
-      # before a tag exists, so the cooling-off adds nothing.
+      # Own actions skip the cooldown, so they stay out of the cooled-down group.
       exclude: ["Adam-S-Daniel/*", "jodidaniel/*"]
+    groups:
+      actions:
+        applies-to: version-updates
+        patterns: ["*"]
+        exclude-patterns: ["Adam-S-Daniel/*", "jodidaniel/*"]
+      actions-security:
+        applies-to: security-updates
+        patterns: ["*"]
+  # The synced agent-checks dependency; _agent-guidance updates the source copy.
+  - package-ecosystem: npm
+    directory: "/.githooks/dated-phrasing"
+    schedule:
+      interval: weekly
+    # Holds back security updates too, so the synced package-lock.json copies
+    # do not each get a PR that the sync then overwrites.
+    ignore:
+      - dependency-name: "*"
+    cooldown:
+      default-days: 7
+      semver-major-days: 30
