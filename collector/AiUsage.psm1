@@ -222,6 +222,7 @@ function Get-ErrorText {
     elseif ($m -like 'Claude Code token expired*') { 'Claude Code login expired; open Claude Code to renew it' }
     elseif ($m -like 'config.json claudePaceFrom*') { 'claudePaceFrom in config.json is invalid; see the README' }
     elseif ($m -like 'No Codex ChatGPT login found*') { 'no Codex login; run codex login' }
+    elseif ($m -like 'loop: *') { $m.Substring(6) }   # Get-LoopSource throws only fixed phrases
     elseif ($m -like 'Claude platform access is not set up*') { 'platform access is not set up; run Install.ps1 -SetupWif' }
     elseif ($m -like 'Token exchange failed*') { if ($code) { "token exchange failed (HTTP $code)" } else { 'token exchange failed' } }
     elseif ($m -like 'Could not create a key in the TPM*' -or $m -like 'Signing key *' -or $m -like 'The TPM-backed*') { 'signing key unavailable' }
@@ -493,6 +494,55 @@ function Get-PlatformSource([datetimeoffset]$Now, $Headers, [int]$Days) {
     ConvertTo-PlatformSource -UsagePages $usage -CostPages $cost -Now $Now
 }
 
+# config.json "loopStatus": {"command": ["<exe>", "<arg>", ...], "timeoutSeconds": 120}. The command prints one
+# schema-1 JSON document on stdout (skills-evals scripts/loop_status.py collect). When the fresh Claude source has an
+# ok seven_day window, its reading is appended as --week-used/--week-at/--week-resets. Only stdout is read; stderr is
+# discarded because it can carry anything, and every error here is a fixed phrase.
+$script:MaxLoopBytes = 262144
+
+function Invoke-LoopProcess {
+    param([string[]]$Command, [int]$TimeoutSeconds)
+    $psi = [Diagnostics.ProcessStartInfo]::new($Command[0])
+    # Not $Command[1..($Command.Count - 1)]: on a one-element command that range is 1,0 and re-adds the program.
+    foreach ($a in @($Command | Select-Object -Skip 1)) { if ($null -ne $a) { $psi.ArgumentList.Add($a) } }
+    $psi.RedirectStandardOutput = $true; $psi.RedirectStandardError = $true; $psi.UseShellExecute = $false
+    $proc = [Diagnostics.Process]::Start($psi)
+    try {
+        $out = $proc.StandardOutput.ReadToEndAsync()
+        $null = $proc.StandardError.ReadToEndAsync()   # drained and dropped so a full pipe cannot stall the command
+        if (-not $proc.WaitForExit($TimeoutSeconds * 1000)) {
+            try { $proc.Kill($true) } catch { $null = $_ }
+            throw 'loop: status command timed out'
+        }
+        $proc.WaitForExit()
+        @{ ExitCode = $proc.ExitCode; Output = $out.GetAwaiter().GetResult() }
+    }
+    finally { $proc.Dispose() }
+}
+
+function Get-LoopSource {
+    param([datetimeoffset]$Now, $Settings, $ClaudeSource, [scriptblock]$Invoke = { param($Command, $TimeoutSeconds) Invoke-LoopProcess -Command $Command -TimeoutSeconds $TimeoutSeconds })
+    $command = @(Get-Prop $Settings 'command' | Where-Object { $null -ne $_ } | ForEach-Object { [string]$_ })
+    if (-not $command.Count -or -not $command[0]) { throw 'loop: loopStatus.command in config.json is invalid; see the README' }
+    $timeout = 0
+    if (-not [int]::TryParse([string](Get-Prop $Settings 'timeoutSeconds'), [ref]$timeout) -or $timeout -le 0) { $timeout = 120 }
+    if (Get-Prop $ClaudeSource 'ok') {
+        $week = @(Get-Prop $ClaudeSource 'windows') | Where-Object { (Get-Prop $_ 'id') -eq 'seven_day' } | Select-Object -First 1
+        $at = Get-Prop $ClaudeSource 'fetched_at'; $resets = Get-Prop $week 'resets_at'
+        if ($week -and $at -and $resets -and $null -ne (Get-Prop $week 'used_pct')) {
+            $command += @('--week-used', ([double](Get-Prop $week 'used_pct')).ToString('R', [Globalization.CultureInfo]::InvariantCulture),
+                '--week-at', [string]$at, '--week-resets', [string]$resets)
+        }
+    }
+    $r = & $Invoke $command $timeout
+    if ($r.ExitCode -ne 0) { throw "loop: status command failed (exit $($r.ExitCode))" }
+    $text = [string]$r.Output
+    if ([Text.Encoding]::UTF8.GetByteCount($text) -gt $script:MaxLoopBytes) { throw 'loop: status output is too large' }
+    $status = try { $text | ConvertFrom-Json } catch { $null }
+    if ($null -eq $status -or (Get-Prop $status 'schema') -ne 1) { throw 'loop: status output is not a schema 1 document' }
+    [ordered]@{ ok = $true; fetched_at = ConvertTo-IsoUtc $Now; status = $status }
+}
+
 function Publish-Gist([string]$GistId, [string]$Json) {
     $tmp = New-TemporaryFile
     try {
@@ -543,6 +593,12 @@ function Invoke-AiUsageCollect {
     foreach ($name in $fetchers.Keys) {
         $result = try { & $fetchers[$name] } catch { @{ ok = $false; error = Get-ErrorText $_.Exception $name } }
         $sources[$name] = Merge-Source -Previous (Get-Prop $prev $name) -Result $result
+    }
+    # Optional, and after the others because it takes Claude's fresh weekly reading.
+    $loopSettings = Get-Prop $config 'loopStatus'
+    if ($null -ne $loopSettings) {
+        $result = try { Get-LoopSource -Now $now -Settings $loopSettings -ClaudeSource $sources['claude'] } catch { @{ ok = $false; error = Get-ErrorText $_.Exception 'loop' } }
+        $sources['loop'] = Merge-Source -Previous (Get-Prop $prev 'loop') -Result $result
     }
     # Encrypted when the install has a key; an older install keeps publishing plaintext until Install.ps1 reruns.
     $payload = New-PublishPayload -Sources $sources -Now $now -Key (Get-Prop $config 'key') -PreviousPlatform (Get-Prop $prev 'platform')
@@ -650,4 +706,4 @@ function Invoke-MeterHistory {
     else { "$(ConvertTo-IsoUtc $Now) meter history: push failed; $($pending.Count) row(s) kept for the next try" | Add-Content (Join-Path $ConfigDir 'error.log') }
 }
 
-Export-ModuleMember -Function ConvertTo-*, ConvertFrom-Base64Url, New-UsageKey, Protect-UsageJson, Unprotect-UsageJson, Get-WindowLabel, New-Wif*, Select-PlatformAuth, Get-WifKey, Merge-Source, Get-ErrorText, New-PublishPayload, Get-CollectDays, Get-ClaudePaceFrom, Set-ClaudePace, Select-ClaudeCredential, Get-CodexCredential, Save-AdminKey, Read-AdminKey, Invoke-AiUsageCollect, Push-MeterRows, Invoke-MeterHistory
+Export-ModuleMember -Function ConvertTo-*, ConvertFrom-Base64Url, New-UsageKey, Protect-UsageJson, Unprotect-UsageJson, Get-WindowLabel, New-Wif*, Select-PlatformAuth, Get-WifKey, Merge-Source, Get-ErrorText, New-PublishPayload, Get-CollectDays, Get-ClaudePaceFrom, Set-ClaudePace, Select-ClaudeCredential, Get-CodexCredential, Save-AdminKey, Read-AdminKey, Invoke-AiUsageCollect, Get-LoopSource, Push-MeterRows, Invoke-MeterHistory
