@@ -1,0 +1,17 @@
+# .agents-sync.yml — Drop this file in your repo root.
+#
+# The _agent-guidance CI reads it to decide which language / tooling
+# sections to include in the managed portion of your AGENTS.md.
+#
+# Available sections (each maps to agents-md/sections/<name>.md):
+#   python, javascript, typescript, go, dotnet, rust, docker
+#
+# If this file is absent, the sync falls back to default_sections defined
+# in the central repos.yml registry (see that file in _agent-guidance).
+# If neither exists, the repo receives only the base guidance.
+#
+# repos.yml also lists repos excluded from sync entirely (e.g. out-of-scope
+# or archived repos) — this file has no effect for an excluded repo.
+
+sections:
+  - javascript
