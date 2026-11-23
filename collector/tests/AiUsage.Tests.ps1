@@ -238,6 +238,10 @@ Describe 'Codex window labels' {
         Get-WindowLabel 604800 | Should -Be 'Week'
         Get-WindowLabel 2592000 | Should -Be '30-day window'
         Get-WindowLabel 10800 | Should -Be '3-hour window'
+        # not banker's rounding, and not whole hours for a part-hour window
+        Get-WindowLabel 9000 | Should -Be '2.5-hour window'
+        Get-WindowLabel 12600 | Should -Be '3.5-hour window'
+        Get-WindowLabel 5400 | Should -Be '1.5-hour window'
     }
 }
 

@@ -868,3 +868,11 @@ test("loop-g: a failed loop source keeps the previous status and shows the error
   const bad = loopStatus(); bad.loop.used_points = "<img src=x>";
   assert.match(await loopApp(loopDoc(bad)), /malformed: sources\.loop\.status\.loop\.used_points/);
 });
+
+test("fmtTok: a count that rounds up to the next unit is promoted, never shown as 1000.0k", async () => {
+  const doc = validDoc();
+  doc.sources.platform.usage = [{ date: day(1), model: "example-model", input: 999950, cache_write: 999950000, cache_read: 999995000, output: 999 }];
+  const p = await boot({ hash: "#" + A, gists: { [A]: doc } });
+  assert.doesNotMatch(p.app(), /1000\.\d+[kMB]/);
+  assert.match(p.app(), /<td>1\.0M<\/td><td>1\.00B<\/td><td>1\.00B<\/td><td>999<\/td>/);
+});
