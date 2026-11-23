@@ -1,6 +1,6 @@
 <!-- BEGIN MANAGED SECTION — DO NOT EDIT ABOVE "## Repo-specific additions" -->
 <!-- Source: _agent-guidance -->
-<!-- Sections: none -->
+<!-- Sections: javascript -->
 <!-- Mode: stub -->
 
 # AGENTS.md
@@ -37,6 +37,12 @@ under 32 KiB (Codex silently truncates it).
 `fleet-guidance check value:` line, or `fleet-guidance check: none` when no
 such line is in your context. Never guess one or copy it from a file you
 read; only in replies to the user.
+
+## JavaScript
+
+- Handle errors in every `catch` block — never swallow exceptions silently.
+- Use the project's existing module system (ESM or CommonJS) consistently.
+- Run the linter (`eslint`, `biome`, etc.) before considering a change complete.
 
 <!-- END MANAGED SECTION -->
 ## Repo-specific additions
