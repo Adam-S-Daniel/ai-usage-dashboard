@@ -855,9 +855,16 @@ test("loop-h: the catch-up calculation is shown step by step, escaped, and a bad
   assert.match(app, /<b>6\.0<\/b> − <b>2\.0<\/b> = <b>4\.0 points a week/);
   assert.match(app, /<b>12\.0<\/b> ÷ <b>4\.0<\/b> = <b>3\.0 weeks<\/b> from /);
   assert.doesNotMatch(app, /<b>s<\/b>/);
+  st.forecast.calculation.loop_jobs_points = 30;
+  assert.doesNotMatch(await loopApp(loopDoc(st)), /loop jobs <b>30/);
+  st.forecast.calculation.capacity_basis = "stop_less_other";
+  st.forecast.calculation.account_stop_points = 75;
+  assert.match(await loopApp(loopDoc(st)), /then the 75% stop less your other use:/);
   st.forecast.calculation.room_points = -1;
   app = await loopApp(loopDoc(st));
   assert.match(app, /Room is -1\.0 points a week, so the backlog never clears at this capacity\./);
+  st.forecast.calculation.backlog_points.central = 0;
+  assert.match(await loopApp(loopDoc(st)), /Catch-up: nothing to clear: 0 weeks\./);
   st.forecast.calculation.subjects[0].points = "1";
   assert.match(await loopApp(loopDoc(st)), /malformed/);
   assert.doesNotMatch(await loopApp(loopDoc()), /How the catch-up is worked out/);
