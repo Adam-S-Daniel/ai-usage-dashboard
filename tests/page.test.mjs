@@ -838,6 +838,38 @@ test("loop-g: the pace-hold replay behind the eval capacity is explained, and a 
   assert.doesNotMatch(await loopApp(loopDoc()), /replays the pace hold/);
 });
 
+test("loop-h: the catch-up calculation is shown step by step, escaped, and a bad one is rejected", async () => {
+  const st = loopStatus();
+  st.forecast.calculation = { subjects: [{ kind: "skill", subject: "<b>s</b>", route: "keep", open_cells: 1, pairs: 4, points: 1.25 }], subjects_total: 3,
+    backlog_points: { central: 12, low: 10, high: 20 }, backlog_pairs: 24, usd_per_point: 15.6, weekly_cap_points: 25, loop_jobs_points: 9,
+    after_loop_jobs_points: 16, capacity_points: 6, capacity_basis: "pace_replay", keep_up_items: [{ item: "new skills", points: 1 }, { item: "re-checks", points: 1 }],
+    keep_up_points: 2, room_points: 4, weeks_central: 3, start: iso(-6e4) };
+  let app = await loopApp(loopDoc(st));
+  assert.match(app, /<summary>How the catch-up is worked out<\/summary>/);
+  assert.match(app, /Open subjects: <b>3<\/b>/);
+  assert.match(app, /<td>&lt;b&gt;s&lt;\/b&gt;<\/td><td>skill<\/td><td>keep<\/td><td>1<\/td><td>4<\/td><td>1\.3<\/td>/);
+  assert.match(app, /2 more not listed\./);
+  assert.match(app, /≈12\.0 points<\/b> \(10\.0 to 20\.0\), 24 pairs/);
+  assert.match(app, /weekly cap <b>25\.0<\/b> − loop jobs <b>9\.0<\/b> = <b>16\.0<\/b>, then the pace hold replayed over recent weeks of your real use: <b>6\.0 points a week/);
+  assert.match(app, /new skills 1\.0 \+ re-checks 1\.0 = <b>2\.0 points a week/);
+  assert.match(app, /<b>6\.0<\/b> − <b>2\.0<\/b> = <b>4\.0 points a week/);
+  assert.match(app, /<b>12\.0<\/b> ÷ <b>4\.0<\/b> = <b>3\.0 weeks<\/b> from /);
+  assert.doesNotMatch(app, /<b>s<\/b>/);
+  st.forecast.calculation.loop_jobs_points = 30;
+  assert.doesNotMatch(await loopApp(loopDoc(st)), /loop jobs <b>30/);
+  st.forecast.calculation.capacity_basis = "stop_less_other";
+  st.forecast.calculation.account_stop_points = 75;
+  assert.match(await loopApp(loopDoc(st)), /then the 75% stop less your other use:/);
+  st.forecast.calculation.room_points = -1;
+  app = await loopApp(loopDoc(st));
+  assert.match(app, /Room is -1\.0 points a week, so the backlog never clears at this capacity\./);
+  st.forecast.calculation.backlog_points.central = 0;
+  assert.match(await loopApp(loopDoc(st)), /Catch-up: nothing to clear: 0 weeks\./);
+  st.forecast.calculation.subjects[0].points = "1";
+  assert.match(await loopApp(loopDoc(st)), /malformed/);
+  assert.doesNotMatch(await loopApp(loopDoc()), /How the catch-up is worked out/);
+});
+
 test("loop-e: under the line, a 5-hour stop with a hold, and a stale computation", async () => {
   const st = loopStatus();
   Object.assign(st.pace, { used_pct: 40, under_line_points: 6.5, ahead: false });

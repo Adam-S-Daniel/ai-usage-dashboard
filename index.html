@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'sha256-N20+tYuKOA7HW8V3byHi1yDY2qEl1zCaih8JFJZfJsc='; connect-src https://api.github.com https://gist.githubusercontent.com; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'sha256-cgpWuXx191MobWviABe5g2tIc+qG5OipsyPw/Vk2Kxk='; connect-src https://api.github.com https://gist.githubusercontent.com; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'">
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-title" content="AI Usage">
@@ -57,6 +57,11 @@ code{font-size:13px;word-break:break-all}
 .other .bar{height:8px}
 .tick.stop{background:var(--crit)}
 .sec{margin-top:14px;border-top:1px solid var(--grid);padding-top:8px}
+details.calc{margin-top:10px;font-size:13px;color:var(--ink2)}
+details.calc summary{cursor:pointer;color:var(--ink);font-weight:500}
+details.calc ol{margin:8px 0 0;padding-left:20px}
+details.calc li{margin:6px 0;line-height:1.45}
+details.calc b{color:var(--ink);font-weight:600;font-variant-numeric:tabular-nums}
 </style>
 </head>
 <body>
@@ -238,6 +243,35 @@ function replayNote(r) {
   return `<div class="sub">Eval capacity replays the pace hold over your last ${weeks} of real use: ${range} points a week, where a flat weekly average would give ≈${f1(r.flat_points)}.${half}</div>`;
 }
 
+// The catch-up arithmetic, step by step, from the forecast's own numbers (loop_status.py `calculation`).
+const CAP_BASIS = { pace_replay: "the pace hold replayed over recent weeks of your real use", evals_first: "evals running first after the reset",
+  stop_less_other: "the account stop less your other use", none: "no account stop applied" };
+function calcSteps(c) {
+  if (!c) return "";
+  const p = (v) => v == null ? "?" : f1(v);
+  const rows = c.subjects.map((r) => `<tr><td>${esc(r.subject)}</td><td>${esc(r.kind)}</td><td>${esc(r.route || "")}</td><td>${r.open_cells == null ? "" : esc(r.open_cells)}</td><td>${r.pairs == null ? "" : g1(r.pairs)}</td><td>${p(r.points)}</td></tr>`).join("");
+  const more = c.subjects_total > c.subjects.length ? `<div class="sub">${c.subjects_total - c.subjects.length} more not listed.</div>` : "";
+  const keep = c.keep_up_items.length ? c.keep_up_items.map((i) => `${esc(i.item)} ${p(i.points)}`).join(" + ") + " = " : "";
+  let basis = hasOwn(CAP_BASIS, c.capacity_basis) ? CAP_BASIS[c.capacity_basis] : "the account stop";
+  if (c.account_stop_points != null) basis = basis.replace("the account stop", `the ${g1(c.account_stop_points)}% stop`);
+  // Show the subtraction only when it is the one the forecast made (loop jobs in the cap, floored at 0).
+  const lessJobs = c.loop_jobs_points == null || c.weekly_cap_points == null || c.after_loop_jobs_points == null
+    || Math.abs(Math.max(0, c.weekly_cap_points - c.loop_jobs_points) - c.after_loop_jobs_points) > 0.05 ? ""
+    : ` − loop jobs <b>${p(c.loop_jobs_points)}</b> = <b>${p(c.after_loop_jobs_points)}</b>` + (c.weekly_cap_points < c.loop_jobs_points ? " (floored at 0)" : "");
+  const weeks = c.backlog_points.central != null && c.backlog_points.central <= 0 ? "nothing to clear: 0 weeks."
+    : c.room_points == null || c.room_points <= 0
+    ? `Room is ${p(c.room_points)} points a week, so the backlog never clears at this capacity.`
+    : `<b>${p(c.backlog_points.central)}</b> ÷ <b>${p(c.room_points)}</b> = <b>${c.weeks_central == null ? "?" : f1(c.weeks_central)} weeks</b>` +
+      (c.start ? ` from ${esc(localTime(c.start))}` : "") + ".";
+  return `<details class="calc"><summary>How the catch-up is worked out</summary><ol>
+    <li>Open subjects: <b>${esc(c.subjects_total)}</b>, each still needing eval pairs before its keep or remove test decides. Points are each subject's pairs at the measured cost (≈$${p(c.usd_per_point)} a point).<div class="scroll"><table><tr><th>Subject</th><th>Kind</th><th>Route</th><th>Cells</th><th>Pairs</th><th>Points</th></tr>${rows}</table></div>${more}</li>
+    <li>Backlog: the subjects add to <b>≈${p(c.backlog_points.central)} points</b> (${p(c.backlog_points.low)} to ${p(c.backlog_points.high)})${c.backlog_pairs == null ? "" : `, ${g1(c.backlog_pairs)} pairs`}.</li>
+    <li>Eval capacity: weekly cap <b>${p(c.weekly_cap_points)}</b>${lessJobs}, then ${esc(basis)}: <b>${p(c.capacity_points)} points a week</b>.</li>
+    <li>Keep-up, new work each week: ${keep}<b>${p(c.keep_up_points)} points a week</b>.</li>
+    <li>Room for the backlog: <b>${p(c.capacity_points)}</b> − <b>${p(c.keep_up_points)}</b> = <b>${p(c.room_points)} points a week</b>.</li>
+    <li>Catch-up: ${weeks}</li></ol></details>`;
+}
+
 function loopForecast(f, error) {
   let body = "";
   if (f) {
@@ -249,7 +283,7 @@ function loopForecast(f, error) {
       : `<div class="sub">Per-task points: see the project dashboard's routines table.</div>`;
     body = `<div class="row"><span>Catch-up</span><span class="big">${catchUp}</span></div>
       <div class="sub">Keep-up ≈${f1(f.keep_up_points_per_week)} points/week · eval capacity ≈${f1(f.capacity_points_per_week)} points/week · non-eval use ≈${f1(f.non_eval_points_per_week)} points/week · open subjects ${esc(f.open_subjects)}</div>
-      ${replayNote(f.pace_replay)}${tasks}<div class="sub">Forecast as of ${esc(localTime(f.as_of))}</div>`;
+      ${replayNote(f.pace_replay)}${calcSteps(f.calculation)}${tasks}<div class="sub">Forecast as of ${esc(localTime(f.as_of))}</div>`;
   }
   const e = error ? `<div class="sub warn">▲ Forecast: ${esc(error)}</div>` : "";
   return body || e ? `<div class="sec"><h2>Forecast</h2>${body}${e}</div>` : "";
@@ -469,6 +503,17 @@ function validateUsage(doc) {
       for (const k of ["keep_up_points_per_week", "capacity_points_per_week", "non_eval_points_per_week"]) n(f[k], "forecast." + k);
       need(num(f.open_subjects) && f.open_subjects >= 0, q + ".forecast.open_subjects");
       if (f.catch_up_date != null) { need(obj(f.catch_up_date), q + ".forecast.catch_up_date"); for (const k of ["central", "fast", "slow"]) opt(f.catch_up_date[k], when, `${q}.forecast.catch_up_date.${k}`); }
+      if (f.calculation != null) {
+        const c = f.calculation, r = q + ".forecast.calculation";
+        need(obj(c) && num(c.subjects_total) && c.subjects_total >= 0 && obj(c.backlog_points), r);
+        for (const k of ["central", "low", "high"]) opt(c.backlog_points[k], num, `${r}.backlog_points.${k}`);
+        for (const k of ["backlog_pairs", "usd_per_point", "account_stop_points", "weekly_cap_points", "loop_jobs_points", "after_loop_jobs_points", "capacity_points", "keep_up_points", "room_points", "weeks_central"]) opt(c[k], num, `${r}.${k}`);
+        opt(c.capacity_basis, str, r + ".capacity_basis");
+        opt(c.start, when, r + ".start");
+        need(Array.isArray(c.subjects) && Array.isArray(c.keep_up_items), r);
+        list(c.subjects, r + ".subjects", 60, (x, y) => { need(str(x.subject) && str(x.kind), y); opt(x.route, str, y + ".route"); for (const k of ["open_cells", "pairs", "points"]) opt(x[k], num, `${y}.${k}`); });
+        list(c.keep_up_items, r + ".keep_up_items", 20, (x, y) => { need(str(x.item), y + ".item"); opt(x.points, num, y + ".points"); });
+      }
       if (f.pace_replay != null) {
         const r = f.pace_replay;
         need(obj(r) && num(r.weeks) && r.weeks >= 0, q + ".forecast.pace_replay");
@@ -508,10 +553,15 @@ function demo() {
       pace: { source: "live", used_pct: 76, at: iso(-12e4), elapsed_pct: 56, line_pct: 44.8, stop_pct: 80, ahead: true, under_line_points: -31.2 },
       guard_pace: { source: "guard", used_pct: 74, at: iso(-4.5 * H), elapsed_pct: 56, line_pct: 44.8, stop_pct: 80, ahead: true, under_line_points: -29.2 },
       loop: { eval_spent_points: 13.3, eval_pending_points: 0, eval_committed_points: 13.3, loop_jobs_points: 8.9, used_points: 22.2, cap_points: 25, eval_cap_points: 16.1, room_points: 0, eval_runs: 89, fires: 89 },
-      forecast: { as_of: iso(-30 * 6e4), open_subjects: 21, backlog_points: 26, catch_up_weeks: { central: 3.2, fast: 1.5, slow: null },
-        catch_up_date: { central: iso(538 * H), fast: iso(252 * H), slow: null }, keep_up_points_per_week: 6.2, capacity_points_per_week: 6.3,
+      forecast: { as_of: iso(-30 * 6e4), open_subjects: 21, backlog_points: 26, catch_up_weeks: { central: 5.1, fast: 1.5, slow: null },
+        catch_up_date: { central: iso(857 * H), fast: iso(252 * H), slow: null }, keep_up_points_per_week: 1.2, capacity_points_per_week: 6.3,
         eval_cap_points_per_week: 16.1, loop_jobs_points_per_week: 8.9, non_eval_points_per_week: 60, pace_hold_modeled: true,
         pace_replay: { weeks: 2, low_points: 4.5, high_points: 8, flat_points: 0, half_spent_by_hours: 16 },
+        calculation: { subjects: [{ kind: "guidance", subject: "sample-section", route: "keep", open_cells: 2, pairs: 12, points: 3.1 },
+          { kind: "skill", subject: "sample-skill", route: "remove-or-cap", open_cells: 1, pairs: 20, points: 2.4 }], subjects_total: 21,
+          backlog_points: { central: 26, low: 18, high: 61 }, backlog_pairs: 160, usd_per_point: 15.6, weekly_cap_points: 25, loop_jobs_points: 8.9,
+          after_loop_jobs_points: 16.1, capacity_points: 6.3, capacity_basis: "pace_replay", account_stop_points: 80, keep_up_items: [{ item: "new guidance sections", points: 1.2 }],
+          keep_up_points: 1.2, room_points: 5.1, weeks_central: 5.1, start: iso(-30 * 6e4) },
         tasks: [{ task: "Sample daily task", in_loop: true, model: "sample-model", fires_per_week: 7, points_per_week: 5.1 }] },
       forecast_error: null } } } };
 }
