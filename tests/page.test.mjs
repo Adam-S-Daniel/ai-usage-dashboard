@@ -823,6 +823,21 @@ test("loop-d: a forecast with dates shows the central date and range; tasks make
   assert.doesNotMatch(app, /<b>x|<i>partial/);
 });
 
+test("loop-g: the pace-hold replay behind the eval capacity is explained, and a bad one is rejected", async () => {
+  const st = loopStatus();
+  st.forecast.capacity_points_per_week = 6.3;
+  st.forecast.pace_replay = { weeks: 2, low_points: 4.55, high_points: 8.04, flat_points: 0, half_spent_by_hours: 16.6 };
+  let app = await loopApp(loopDoc(st));
+  assert.match(app, /eval capacity ≈6\.3 points\/week/);
+  assert.match(app, /Eval capacity replays the pace hold over your last 2 weeks of real use: ≈4\.5 to 8\.0 points a week, where a flat weekly average would give ≈0\.0\. Evals get half of it within about 17 hours of the weekly reset\./);
+  st.forecast.pace_replay = { weeks: 1, low_points: 5, high_points: 5, flat_points: 0, half_spent_by_hours: null };
+  app = await loopApp(loopDoc(st));
+  assert.match(app, /over your last 1 week of real use: ≈5\.0 points a week, where a flat weekly average would give ≈0\.0\.<\/div>/);
+  st.forecast.pace_replay = { weeks: 2, low_points: "4", high_points: 8, flat_points: 0 };
+  assert.match(await loopApp(loopDoc(st)), /malformed/);
+  assert.doesNotMatch(await loopApp(loopDoc()), /replays the pace hold/);
+});
+
 test("loop-e: under the line, a 5-hour stop with a hold, and a stale computation", async () => {
   const st = loopStatus();
   Object.assign(st.pace, { used_pct: 40, under_line_points: 6.5, ahead: false });

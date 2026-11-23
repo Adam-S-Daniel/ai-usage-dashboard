@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'sha256-+8+j1P7vs7DRZAOJ+LetYd9bjBVkF2sw6sjX2bwdFfE='; connect-src https://api.github.com https://gist.githubusercontent.com; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'sha256-oXGuHV05eXygLHzG8RFGj1VVq1elZHpW/BPB82CIcV8='; connect-src https://api.github.com https://gist.githubusercontent.com; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'">
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-title" content="AI Usage">
@@ -222,6 +222,16 @@ function loopSpend(l) {
     <div class="sub">Approximate allowance points. Project threads are not counted.</div></div>`;
 }
 
+// The eval capacity is the guard's pace hold replayed over recent weeks of real use: evals run whenever other use is
+// under the pace line (early in the week, after a quiet night), even in a week whose total passes the stop.
+function replayNote(r) {
+  if (!r) return "";
+  const weeks = r.weeks === 1 ? "1 week" : `${r.weeks} weeks`;
+  const range = r.low_points === r.high_points ? `≈${f1(r.low_points)}` : `≈${f1(r.low_points)} to ${f1(r.high_points)}`;
+  const half = r.half_spent_by_hours == null ? "" : ` Evals get half of it within about ${Math.round(r.half_spent_by_hours)} hours of the weekly reset.`;
+  return `<div class="sub">Eval capacity replays the pace hold over your last ${weeks} of real use: ${range} points a week, where a flat weekly average would give ≈${f1(r.flat_points)}.${half}</div>`;
+}
+
 function loopForecast(f, error) {
   let body = "";
   if (f) {
@@ -233,7 +243,7 @@ function loopForecast(f, error) {
       : `<div class="sub">Per-task points: see the project dashboard's routines table.</div>`;
     body = `<div class="row"><span>Catch-up</span><span class="big">${catchUp}</span></div>
       <div class="sub">Keep-up ≈${f1(f.keep_up_points_per_week)} points/week · eval capacity ≈${f1(f.capacity_points_per_week)} points/week · non-eval use ≈${f1(f.non_eval_points_per_week)} points/week · open subjects ${esc(f.open_subjects)}</div>
-      ${tasks}<div class="sub">Forecast as of ${esc(localTime(f.as_of))}</div>`;
+      ${replayNote(f.pace_replay)}${tasks}<div class="sub">Forecast as of ${esc(localTime(f.as_of))}</div>`;
   }
   const e = error ? `<div class="sub warn">▲ Forecast: ${esc(error)}</div>` : "";
   return body || e ? `<div class="sec"><h2>Forecast</h2>${body}${e}</div>` : "";
@@ -453,6 +463,12 @@ function validateUsage(doc) {
       for (const k of ["keep_up_points_per_week", "capacity_points_per_week", "non_eval_points_per_week"]) n(f[k], "forecast." + k);
       need(num(f.open_subjects) && f.open_subjects >= 0, q + ".forecast.open_subjects");
       if (f.catch_up_date != null) { need(obj(f.catch_up_date), q + ".forecast.catch_up_date"); for (const k of ["central", "fast", "slow"]) opt(f.catch_up_date[k], when, `${q}.forecast.catch_up_date.${k}`); }
+      if (f.pace_replay != null) {
+        const r = f.pace_replay;
+        need(obj(r) && num(r.weeks) && r.weeks >= 0, q + ".forecast.pace_replay");
+        for (const k of ["low_points", "high_points", "flat_points"]) n(r[k], "forecast.pace_replay." + k);
+        opt(r.half_spent_by_hours, num, q + ".forecast.pace_replay.half_spent_by_hours");
+      }
       list(f.tasks, q + ".forecast.tasks", 50, (t, r) => { need(str(t.task), r + ".task"); need(num(t.points_per_week), r + ".points_per_week"); });
     }
     opt(st.forecast_error, errText, q + ".forecast_error");
@@ -489,6 +505,7 @@ function demo() {
       forecast: { as_of: iso(-30 * 6e4), open_subjects: 21, backlog_points: 26, catch_up_weeks: { central: 3.2, fast: 1.5, slow: null },
         catch_up_date: { central: iso(538 * H), fast: iso(252 * H), slow: null }, keep_up_points_per_week: 6.2, capacity_points_per_week: 14,
         eval_cap_points_per_week: 16.1, loop_jobs_points_per_week: 8.9, non_eval_points_per_week: 60, pace_hold_modeled: true,
+        pace_replay: { weeks: 2, low_points: 4.5, high_points: 8, flat_points: 0, half_spent_by_hours: 16 },
         tasks: [{ task: "Sample daily task", in_loop: true, model: "sample-model", fires_per_week: 7, points_per_week: 5.1 }] },
       forecast_error: null } } } };
 }
