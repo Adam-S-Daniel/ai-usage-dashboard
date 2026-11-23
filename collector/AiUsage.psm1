@@ -110,7 +110,9 @@ function Get-WindowLabel([long]$Seconds) {
     if ($Seconds -eq 18000) { return 'Session (5 h)' }
     if ($Seconds -eq 604800) { return 'Week' }
     if ($Seconds % 86400 -eq 0) { return "$($Seconds / 86400)-day window" }
-    "$([math]::Round($Seconds / 3600))-hour window"
+    # Hours to one decimal (2.5, not banker's-rounded 2); a whole number of hours prints without ".0".
+    $h = [math]::Round($Seconds / 3600, 1, [MidpointRounding]::AwayFromZero)
+    "$($h.ToString([cultureinfo]::InvariantCulture))-hour window"
 }
 
 function ConvertTo-CodexSource {
