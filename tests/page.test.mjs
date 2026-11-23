@@ -764,7 +764,7 @@ const loopStatus = () => ({
   schema: 1, computed_at: iso(-5 * 6e4),
   week: { window_start: iso(-4 * 864e5), resets_at: iso(2 * 864e5 + 22 * 36e5) },
   session: { plan: "ultra", stop_pct: null, hold: false },
-  guard: { ok: true, verdict: "pace_hold", why: "The account is ahead of its weekly pace line: no fire goes.", fits: 0, pace_hold: true, pace_probe: false, session_hold: false },
+  guard: { ok: true, verdict: "pace_hold", why: "Your weekly usage is ahead of the pace line, so no evals start. They start again once the pace line catches up.", fits: 0, pace_hold: true, pace_probe: false, session_hold: false },
   pace: { source: "live", used_pct: 76, at: iso(-6e4), elapsed_pct: 58.23, line_pct: 46.587, stop_pct: 80, ahead: true, under_line_points: -29.413 },
   guard_pace: { source: "guard", used_pct: 74, at: iso(-4 * 36e5), elapsed_pct: 58.23, line_pct: 46.587, stop_pct: 80, ahead: true, under_line_points: -27.413 },
   loop: { eval_spent_points: 13.28, eval_pending_points: 0, eval_committed_points: 13.28, loop_jobs_points: 8.927, used_points: 22.2075, cap_points: 25, eval_cap_points: 16.07, room_points: 0, eval_runs: 89, fires: 89 },
@@ -778,8 +778,8 @@ const loopApp = async (doc) => (await boot({ hash: "#" + A, gists: { [A]: doc } 
 test("loop-a: the sample renders verdict, pace, 5-hour stop, spend, reset, forecast and footer", async () => {
   const app = await loopApp(loopDoc());
   assert.match(app, /<h2>Loop guards<\/h2>/);
-  assert.match(app, /big crit">● Pace hold<\/span>/);
-  assert.match(app, /The account is ahead of its weekly pace line: no fire goes\./);
+  assert.match(app, /big crit">● Paused: ahead of pace<\/span>/);
+  assert.match(app, /Your weekly usage is ahead of the pace line, so no evals start\. They start again once the pace line catches up\./);
   assert.match(app, /76% used, pace line 46\.6% \(80% stop × 58% of week gone\): <span class="pace warn">29\.4 points ahead<\/span>/);
   assert.match(app, /Live reading at /);
   assert.match(app, /Guard's reading: 74% at /);
@@ -800,8 +800,8 @@ test("loop-b: the section is hidden when the document has no loop source", async
 });
 
 test("loop-c: each verdict maps to its label and color", async () => {
-  const want = { open: ["Open", "good"], refresh: ["Refresh fire allowed", "warn"], pace_probe: ["Pace probe allowed", "warn"], pace_hold: ["Pace hold", "crit"],
-    session_hold: ["5-hour stop", "crit"], cap_full: ["Cap full", "crit"], error: ["Guard error", "crit"], "__proto__": ["Unknown", "crit"] };
+  const want = { open: ["Open", "good"], refresh: ["One run allowed", "warn"], pace_probe: ["One run allowed", "warn"], pace_hold: ["Paused: ahead of pace", "crit"],
+    session_hold: ["Paused: 5-hour limit", "crit"], cap_full: ["Paused: weekly share used", "crit"], error: ["Guard could not run", "crit"], "__proto__": ["Unknown", "crit"] };
   for (const [verdict, [label, cls]] of Object.entries(want)) {
     const st = loopStatus(); st.guard.verdict = verdict;
     const app = await loopApp(loopDoc(st));
@@ -886,7 +886,7 @@ test("loop-e: under the line, a 5-hour stop with a hold, and a stale computation
 test("loop-f: the guard error shape (no pace, loop, session, week or forecast) renders", async () => {
   const st = { schema: 1, computed_at: iso(-6e4), guard: { ok: false, verdict: "error", why: "state unreadable", fits: 0 } };
   const app = await loopApp(loopDoc(st));
-  assert.match(app, /Guard error/);
+  assert.match(app, /Guard could not run/);
   assert.match(app, /state unreadable/);
   assert.doesNotMatch(app, /Weekly pace|Loop spend|Next weekly reset|Forecast<|malformed/);
 });
@@ -894,7 +894,7 @@ test("loop-f: the guard error shape (no pace, loop, session, week or forecast) r
 test("loop-g: a failed loop source keeps the previous status and shows the error; a wrong schema is rejected", async () => {
   const app = await loopApp(loopDoc(loopStatus(), { ok: false, error: "loop: status command failed (exit 1)" }));
   assert.match(app, /▲ loop: status command failed \(exit 1\)/);
-  assert.match(app, /Pace hold/);
+  assert.match(app, /Paused: ahead of pace/);
   const st = loopStatus(); st.schema = 2;
   assert.match(await loopApp(loopDoc(st)), /usage\.json is malformed: sources\.loop\.status\.schema/);
   const bad = loopStatus(); bad.loop.used_points = "<img src=x>";

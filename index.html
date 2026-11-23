@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'sha256-cgpWuXx191MobWviABe5g2tIc+qG5OipsyPw/Vk2Kxk='; connect-src https://api.github.com https://gist.githubusercontent.com; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'sha256-7IC+UeASDQ0kE75gc+1F9U7B889Roz2oT1wpvGvhTXI='; connect-src https://api.github.com https://gist.githubusercontent.com; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'">
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-title" content="AI Usage">
@@ -204,7 +204,7 @@ function platformCard(src) {
 
 // Loop guards: the self-improvement loop's allowance guard, as printed by the collector's loopStatus command (schema 1).
 // Allowance points are approximate, so the text says so. Every value is validated before it gets here.
-const VERDICTS = { open: ["Open", "good"], refresh: ["Refresh fire allowed", "warn"], pace_probe: ["Pace probe allowed", "warn"], pace_hold: ["Pace hold", "crit"], session_hold: ["5-hour stop", "crit"], cap_full: ["Cap full", "crit"], error: ["Guard error", "crit"] };
+const VERDICTS = { open: ["Open", "good"], refresh: ["One run allowed", "warn"], pace_probe: ["One run allowed", "warn"], pace_hold: ["Paused: ahead of pace", "crit"], session_hold: ["Paused: 5-hour limit", "crit"], cap_full: ["Paused: weekly share used", "crit"], error: ["Guard could not run", "crit"] };
 const LOOP_STALE_MIN = 20;
 const f1 = (n) => n.toFixed(1), g1 = (n) => String(+n.toFixed(1));
 const clampPct = (n) => Math.max(0, Math.min(100, n));
@@ -549,7 +549,7 @@ function demo() {
     platform: { ok: true, usage, costs },
     loop: { ok: true, fetched_at: iso(-12e4), status: { schema: 1, computed_at: iso(-12e4),
       week: { window_start: iso(-94 * H), resets_at: iso(74 * H) }, session: { plan: "ultra", stop_pct: null, hold: false },
-      guard: { ok: true, verdict: "pace_hold", why: "The account is ahead of its weekly pace line: no fire goes.", fits: 0, pace_hold: true, pace_probe: false, session_hold: false },
+      guard: { ok: true, verdict: "pace_hold", why: "Your weekly usage is ahead of the pace line, so no evals start. They start again once the pace line catches up.", fits: 0, pace_hold: true, pace_probe: false, session_hold: false },
       pace: { source: "live", used_pct: 76, at: iso(-12e4), elapsed_pct: 56, line_pct: 44.8, stop_pct: 80, ahead: true, under_line_points: -31.2 },
       guard_pace: { source: "guard", used_pct: 74, at: iso(-4.5 * H), elapsed_pct: 56, line_pct: 44.8, stop_pct: 80, ahead: true, under_line_points: -29.2 },
       loop: { eval_spent_points: 13.3, eval_pending_points: 0, eval_committed_points: 13.3, loop_jobs_points: 8.9, used_points: 22.2, cap_points: 25, eval_cap_points: 16.1, room_points: 0, eval_runs: 89, fires: 89 },
