@@ -784,7 +784,9 @@ test("loop-a: the sample renders verdict, pace, 5-hour stop, spend, reset, forec
   assert.match(app, /Live reading at /);
   assert.match(app, /Guard's reading: 74% at /);
   assert.match(app, /Off: the ultra plan has no 5-hour window/);
-  assert.match(app, /≈22\.2 of 25 points used since the weekly reset \(evals 13\.3 incl\. 0\.0 pending, scheduled loop jobs 8\.9\); room ≈0\.0/);
+  assert.match(app, /Loop share booked<\/span><span class="big">≈22\.2%/);
+  assert.match(app, /The guard books ≈22\.2% against the 25% share \(evals 13\.3 incl\. 0\.0 pending, scheduled jobs' whole week 8\.9\): a safety margin on every run, never more than the account meter, so room ≈0\.0%\./);
+  assert.doesNotMatch(app, /Loop spend</);
   assert.match(app, /Project threads are not counted\./);
   assert.match(app, /Next weekly reset[\s\S]*in 2 d 22 h/);
   assert.match(app, /Not at current capacity/);
@@ -793,6 +795,21 @@ test("loop-a: the sample renders verdict, pace, 5-hour stop, spend, reset, forec
   assert.match(app, /Forecast as of /);
   assert.match(app, /Computed 5 min ago/);
   assert.doesNotMatch(app, /sub warn" style/);
+});
+
+test("loop-spend: the estimate leads, below the account total, with the guard's booked figure beside it", async () => {
+  // Adam, 2026-11-24: "Loop spend is shown as higher than all usage" (booked 17.6 against an account at 13%).
+  const st = loopStatus();
+  st.pace = { ...st.pace, used_pct: 13, ahead: false };
+  Object.assign(st.loop, { estimated_points: 8.84, eval_estimated_points: 4.29, improve_estimated_points: 3.63, loop_jobs_so_far_points: 0.92,
+    eval_spent_points: 16.02, eval_committed_points: 13, loop_jobs_points: 4.63, used_points: 17.63, room_points: 7.37 });
+  const app = await loopApp(loopDoc(st));
+  assert.match(app, /Loop spend<\/span><span class="big">≈8\.8%<\/span>/);
+  assert.match(app, /≈8\.8% of the week used since the weekly reset, of the loop's 25% share \(eval runs 4\.3, improve runs 3\.6, scheduled jobs so far 0\.9\); the whole account has used 13%\./);
+  assert.match(app, /The guard books ≈17\.6% against the 25% share \(evals 13\.0 incl\. 0\.0 pending, scheduled jobs' whole week 4\.6\)/);
+  assert.match(app, /style="width:35\.36%"/);
+  const bad = loopStatus(); bad.loop.estimated_points = 5;
+  assert.match(await loopApp(loopDoc(bad)), /malformed: sources\.loop\.status\.loop\.eval_estimated_points/);
 });
 
 test("loop-b: the section is hidden when the document has no loop source", async () => {

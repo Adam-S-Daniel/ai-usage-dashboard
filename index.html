@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'sha256-7IC+UeASDQ0kE75gc+1F9U7B889Roz2oT1wpvGvhTXI='; connect-src https://api.github.com https://gist.githubusercontent.com; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'sha256-OZLxWmAncK3HH0bcDfSppvo2KWqiJ8IPctpLDvZFddw='; connect-src https://api.github.com https://gist.githubusercontent.com; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'">
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-title" content="AI Usage">
@@ -225,12 +225,25 @@ function loopPace(p, gp, now) {
     <div class="key"><span><span class="sw" style="background:var(--used)"></span>Used</span><span><span class="sw line"></span>Pace line</span><span><span class="sw" style="background:var(--crit)"></span>Stop</span></div></div>`;
 }
 
-function loopSpend(l) {
-  const pct = l.cap_points > 0 ? clampPct((l.used_points / l.cap_points) * 100) : l.used_points > 0 ? 100 : 0;
-  return `<div class="meter"><div class="row"><span>Loop spend</span><span class="big">≈${f1(l.used_points)}</span></div>
-    <div class="bar" role="img" aria-label="Approximately ${f1(l.used_points)} of ${g1(l.cap_points)} points used"><div class="fill" style="width:${pct}%"></div></div>
-    <div class="sub">≈${f1(l.used_points)} of ${g1(l.cap_points)} points used since the weekly reset (evals ${f1(l.eval_spent_points)} incl. ${f1(l.eval_pending_points)} pending, scheduled loop jobs ${f1(l.loop_jobs_points)}); room ≈${f1(l.room_points)}</div>
-    <div class="sub">Approximate allowance points. Project threads are not counted.</div></div>`;
+// Two figures (Adam, 2026-11-24: "Loop spend is shown as higher than all usage"). The estimate is what the loop has
+// used: its runs' own calls priced from tokens, improve runs, and the scheduled jobs for the share of the week gone.
+// The guard's booked figure is a safe upper bound, not spend: a margin on every run, never above the account reading
+// (which holds all your use), plus the jobs' whole week up front. Both are % of the weekly allowance.
+function loopSpend(l, pace) {
+  const est = l.estimated_points, booked = l.used_points, cap = l.cap_points;
+  const acct = pace ? `; the whole account has used ${g1(pace.used_pct)}%` : "";
+  const guardLine = `<div class="sub">The guard books ≈${f1(booked)}% against the ${g1(cap)}% share (evals ${f1(l.eval_committed_points ?? l.eval_spent_points)} incl. ${f1(l.eval_pending_points)} pending, scheduled jobs' whole week ${f1(l.loop_jobs_points)}): a safety margin on every run, never more than the account meter, so room ≈${f1(l.room_points)}%.</div>`;
+  if (est == null) {
+    const pct = cap > 0 ? clampPct((booked / cap) * 100) : booked > 0 ? 100 : 0;
+    return `<div class="meter"><div class="row"><span>Loop share booked</span><span class="big">≈${f1(booked)}%</span></div>
+    <div class="bar" role="img" aria-label="Approximately ${f1(booked)}% of the week booked of the loop's ${g1(cap)}% share"><div class="fill" style="width:${pct}%"></div></div>
+    ${guardLine}<div class="sub">% of the weekly allowance. Project threads are not counted.</div></div>`;
+  }
+  const pct = cap > 0 ? clampPct((est / cap) * 100) : est > 0 ? 100 : 0;
+  return `<div class="meter"><div class="row"><span>Loop spend</span><span class="big">≈${f1(est)}%</span></div>
+    <div class="bar" role="img" aria-label="Approximately ${f1(est)}% of the week used by the loop, of its ${g1(cap)}% share"><div class="fill" style="width:${pct}%"></div></div>
+    <div class="sub">≈${f1(est)}% of the week used since the weekly reset, of the loop's ${g1(cap)}% share (eval runs ${f1(l.eval_estimated_points)}, improve runs ${f1(l.improve_estimated_points)}, scheduled jobs so far ${f1(l.loop_jobs_so_far_points)})${acct}.</div>
+    ${guardLine}<div class="sub">% of the weekly allowance, estimated from token counts. Project threads are not counted.</div></div>`;
 }
 
 // The eval capacity is the guard's pace hold replayed over recent weeks of real use: evals run whenever other use is
@@ -302,7 +315,7 @@ function loopCard(src, now) {
       ? esc(x.plan ? `Off: the ${x.plan} plan has no 5-hour window` : "Off: no 5-hour window")
       : `Stop at ${g1(x.stop_pct)}%` + (x.hold ? ` · <span class="pace crit">Holding</span>` : "")}</span></div></div>`;
   }
-  if (st.loop) body += loopSpend(st.loop);
+  if (st.loop) body += loopSpend(st.loop, st.pace || st.guard_pace);
   if (st.week && st.week.resets_at) {
     const left = new Date(st.week.resets_at).getTime() - now;
     body += `<div class="sec"><div class="row"><span>Next weekly reset</span><span>${esc(localTime(st.week.resets_at))} · ${left > 0 ? "in " + dur(left) : "just reset"}</span></div></div>`;
@@ -496,6 +509,8 @@ function validateUsage(doc) {
     if (st.loop != null) {
       need(obj(st.loop), q + ".loop");
       for (const f of ["eval_spent_points", "eval_pending_points", "loop_jobs_points", "used_points", "cap_points", "room_points"]) n(st.loop[f], "loop." + f);
+      for (const f of ["eval_committed_points", "estimated_points", "eval_estimated_points", "improve_estimated_points", "loop_jobs_so_far_points"]) nn(st.loop[f], "loop." + f);
+      if (st.loop.estimated_points != null) for (const f of ["eval_estimated_points", "improve_estimated_points", "loop_jobs_so_far_points"]) n(st.loop[f], "loop." + f);
     }
     if (st.forecast != null) {
       const f = st.forecast;
