@@ -64,4 +64,4 @@ Workflows name actions by release tag; [`.github/workflows/actions.lock`](.githu
 | Job | Salient paths |
 |---|---|
 | `node-test` | `index.html`, `tests/**`, `collector/AiUsage.psm1` (encryption interoperability), `.github/workflows/ci.yml`, `.github/workflows/actions.lock` |
-| `pester` | `collector/AiUsage.psm1`, `collector/tests/**`, `.github/workflows/*`, `.github/actions/*` (lockfile verification covers every workflow and local action) |
+| `pester` | `collector/AiUsage.psm1`, `collector/tests/**`, `tests/fixtures/**` (the real loop status fixture), `.github/workflows/*`, `.github/actions/*` (lockfile verification covers every workflow and local action) |

@@ -422,6 +422,21 @@ Describe 'New-PublishPayload' {
             [ordered]@{ claude = [ordered]@{ ok = $true; plan = 'max'; windows = @() }; platform = [ordered]@{ ok = $true; fetched_at = '2026-10-04T12:00:00Z'; usage = @($usage); costs = @($costs) } }
         }
     }
+    It 'keeps a real loop status forecast with every basis window intact, however deep' {
+        # tests/fixtures/loop-forecast-by-window.json is skills-evals scripts/loop_status.py output (forecast_section),
+        # parsed as Get-LoopSource parses the command's stdout.
+        $forecast = Get-Content -Raw -LiteralPath (Join-Path $PSScriptRoot '../../tests/fixtures/loop-forecast-by-window.json')
+        $status = "{`"schema`":1,`"forecast`":$forecast}" | ConvertFrom-Json
+        $sources = [ordered]@{ loop = [ordered]@{ ok = $true; fetched_at = '2026-10-04T12:00:00Z'; status = $status } }
+        $out = (New-PublishPayload -Sources $sources -Now $script:Now).json | ConvertFrom-Json
+        $windows = $out.sources.loop.status.forecast.by_window
+        foreach ($days in '14', '28', '56') {
+            $subject = $windows.$days.calculation.subjects[0]
+            $subject | Should -BeOfType [pscustomobject]
+            $subject.kind | Should -BeOfType [string]
+        }
+        $out.sources.loop.status.forecast.calculation.subjects[0].subject | Should -Be $status.forecast.calculation.subjects[0].subject
+    }
     It 'publishes compact JSON that decrypts to exactly the stored text' {
         $p = New-PublishPayload -Sources (& $script:Big 2 3) -Now $script:Now -Key $script:Key
         ($p.json -match '\n') | Should -Be $false

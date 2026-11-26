@@ -90,7 +90,7 @@ jobs:
               run=false
               while IFS= read -r -d '' path; do
                 case "$path" in
-                  collector/AiUsage.psm1|collector/tests/*|.github/workflows/*|.github/actions/*) run=true; break ;;
+                  collector/AiUsage.psm1|collector/tests/*|tests/fixtures/*|.github/workflows/*|.github/actions/*) run=true; break ;;
                 esac
               done < "$RUNNER_TEMP/changed-paths"
             fi

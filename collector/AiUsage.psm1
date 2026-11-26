@@ -555,6 +555,10 @@ function Publish-Gist([string]$GistId, [string]$Json) {
     finally { Remove-Item -LiteralPath $tmp -ErrorAction SilentlyContinue }
 }
 
+# ConvertTo-Json silently turns anything nested deeper than -Depth into a string, which the page then rejects as
+# malformed (2026-11-26: the loop forecast's per-window calculations sat two levels below the old limit of 8).
+$script:PublishJsonDepth = 32
+
 # What gets published, after encryption: compact JSON, at most 3.5 MB (the page refuses 4 MB; encryption adds a third).
 # If it is too big, keep the previous platform rows with an error when they fit; otherwise publish only the error.
 $script:MaxPublishBytes = 3500000
@@ -562,7 +566,7 @@ $script:MaxPublishBytes = 3500000
 function New-PublishPayload {
     param($Sources, [datetimeoffset]$Now, [string]$Key, [int]$MaxBytes = $script:MaxPublishBytes, $PreviousPlatform)
     $build = {
-        $j = [ordered]@{ schema = 1; generated_at = ConvertTo-IsoUtc $Now; host = [Environment]::MachineName; sources = $Sources } | ConvertTo-Json -Depth 8 -Compress
+        $j = [ordered]@{ schema = 1; generated_at = ConvertTo-IsoUtc $Now; host = [Environment]::MachineName; sources = $Sources } | ConvertTo-Json -Depth $script:PublishJsonDepth -Compress
         @{ json = $j; text = $(if ($Key) { Protect-UsageJson -Json $j -Key $Key } else { $j }) }
     }
     $r = & $build
