@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'sha256-q2LSTm2Rl8yZr/lxdpRXKkFOMJ/lqjypsfeaZz9wVi4='; connect-src https://api.github.com https://gist.githubusercontent.com; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'sha256-KySiv+vftpK7eD1iDMUg8R7W//B08zKGT3vz29QVQ9Q='; connect-src https://api.github.com https://gist.githubusercontent.com; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'">
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-title" content="AI Usage">
@@ -274,6 +274,10 @@ function calcSteps(c) {
   const lessJobs = c.loop_jobs_points == null || c.weekly_cap_points == null || c.after_loop_jobs_points == null
     || Math.abs(Math.max(0, c.weekly_cap_points - c.loop_jobs_points) - c.after_loop_jobs_points) > 0.05 ? ""
     : ` − loop jobs <b>${p(c.loop_jobs_points)}</b> = <b>${p(c.after_loop_jobs_points)}</b>` + (c.weekly_cap_points < c.loop_jobs_points ? " (floored at 0)" : "");
+  // Improve runs share the cap with evals (the guard books them against it), shown when the forecast took them off.
+  const lessImprove = c.improve_points == null || c.after_loop_jobs_points == null || c.after_improve_points == null
+    || Math.abs(Math.max(0, c.after_loop_jobs_points - c.improve_points) - c.after_improve_points) > 0.05 ? ""
+    : ` − improve runs <b>${p(c.improve_points)}</b> = <b>${p(c.after_improve_points)}</b>` + (c.after_loop_jobs_points < c.improve_points ? " (floored at 0)" : "");
   const weeks = c.backlog_points.central != null && c.backlog_points.central <= 0 ? "nothing to clear: 0 weeks."
     : c.room_points == null || c.room_points <= 0
     ? `Room is ${p(c.room_points)} points a week, so the backlog never clears at this capacity.`
@@ -282,7 +286,7 @@ function calcSteps(c) {
   return `<details class="calc"><summary>How the catch-up is worked out</summary><ol>
     <li>Open subjects: <b>${esc(c.subjects_total)}</b>, each still needing eval pairs before its keep or remove test decides. Points are each subject's pairs at the measured cost (≈$${p(c.usd_per_point)} a point).<div class="scroll"><table><tr><th>Subject</th><th>Kind</th><th>Route</th><th>Cells</th><th>Pairs</th><th>Points</th></tr>${rows}</table></div>${more}</li>
     <li>Backlog: the subjects add to <b>≈${p(c.backlog_points.central)} points</b> (${p(c.backlog_points.low)} to ${p(c.backlog_points.high)})${c.backlog_pairs == null ? "" : `, ${g1(c.backlog_pairs)} pairs`}.</li>
-    <li>Eval capacity: weekly cap <b>${p(c.weekly_cap_points)}</b>${lessJobs}, then ${esc(basis)}: <b>${p(c.capacity_points)} points a week</b>.</li>
+    <li>Eval capacity: weekly cap <b>${p(c.weekly_cap_points)}</b>${lessJobs}${lessImprove}, then ${esc(basis)}: <b>${p(c.capacity_points)} points a week</b>.</li>
     <li>Keep-up, new work each week: ${keep}<b>${p(c.keep_up_points)} points a week</b>.</li>
     <li>Room for the backlog: <b>${p(c.capacity_points)}</b> − <b>${p(c.keep_up_points)}</b> = <b>${p(c.room_points)} points a week</b>.</li>
     <li>Catch-up: ${weeks}</li></ol></details>`;
@@ -307,6 +311,15 @@ function basisNote(f, wins, key, shown) {
     `<div class="sub">Rates average the last ${esc(days)} days of data${short}.</div>`;
 }
 
+// How the forecast's weekly averages relate to the loop spend above (this week so far) and what "non-eval use" holds.
+function fitNote(f) {
+  const parts = [];
+  if (f.loop_jobs_points_per_week != null) parts.push(`scheduled jobs ≈${f1(f.loop_jobs_points_per_week)}`);
+  if (f.improve_points_per_week != null) parts.push(`improve runs ≈${f1(f.improve_points_per_week)}`);
+  const loop = parts.length ? ` (${parts.join(", ")} a week)` : "";
+  return `<div class="sub">How these fit together: the loop spend above is this week so far; the forecast's figures are weekly averages over the basis window, so a week can run above them. Non-eval use is everything on the meter except eval runs: your own threads and sessions plus the loop's scheduled jobs and improve runs. The loop's share holds evals, improve runs and scheduled jobs; eval capacity is what is left of it for evals${loop}, and the pace hold can leave them less.</div>`;
+}
+
 function loopForecast(f0, error) {
   let body = "";
   if (f0) {
@@ -319,7 +332,7 @@ function loopForecast(f0, error) {
       : `<div class="sub">Per-task points: see the project dashboard's routines table.</div>`;
     body = `${basisNote(f0, wins, key, f)}<div class="row"><span>Catch-up</span><span class="big">${catchUp}</span></div>
       <div class="sub">Keep-up ≈${f1(f.keep_up_points_per_week)} points/week · eval capacity ≈${f1(f.capacity_points_per_week)} points/week · non-eval use ≈${f1(f.non_eval_points_per_week)} points/week · open subjects ${esc(f.open_subjects)}</div>
-      ${replayNote(f.pace_replay)}${calcSteps(f.calculation)}${tasks}<div class="sub">Forecast as of ${esc(localTime(f.as_of))}</div>`;
+      ${fitNote(f)}${replayNote(f.pace_replay)}${calcSteps(f.calculation)}${tasks}<div class="sub">Forecast as of ${esc(localTime(f.as_of))}</div>`;
   }
   const e = error ? `<div class="sub warn">▲ Forecast: ${esc(error)}</div>` : "";
   return body || e ? `<div class="sec"><h2>Forecast</h2>${body}${e}</div>` : "";
@@ -547,13 +560,14 @@ function validateUsage(doc) {
       opt(f.basis_window_days, (v) => num(v) && v >= 1, q + ".forecast.basis_window_days");
       opt(f.basis_meter_days, num, q + ".forecast.basis_meter_days");
       for (const k of ["keep_up_points_per_week", "capacity_points_per_week", "non_eval_points_per_week"]) n(f[k], "forecast." + k);
+      for (const k of ["loop_jobs_points_per_week", "improve_points_per_week"]) opt(f[k], num, `${q}.forecast.${k}`);
       need(num(f.open_subjects) && f.open_subjects >= 0, q + ".forecast.open_subjects");
       if (f.catch_up_date != null) { need(obj(f.catch_up_date), q + ".forecast.catch_up_date"); for (const k of ["central", "fast", "slow"]) opt(f.catch_up_date[k], when, `${q}.forecast.catch_up_date.${k}`); }
       if (f.calculation != null) {
         const c = f.calculation, r = q + ".forecast.calculation";
         need(obj(c) && num(c.subjects_total) && c.subjects_total >= 0 && obj(c.backlog_points), r);
         for (const k of ["central", "low", "high"]) opt(c.backlog_points[k], num, `${r}.backlog_points.${k}`);
-        for (const k of ["backlog_pairs", "usd_per_point", "account_stop_points", "weekly_cap_points", "loop_jobs_points", "after_loop_jobs_points", "capacity_points", "keep_up_points", "room_points", "weeks_central"]) opt(c[k], num, `${r}.${k}`);
+        for (const k of ["backlog_pairs", "usd_per_point", "account_stop_points", "weekly_cap_points", "loop_jobs_points", "after_loop_jobs_points", "improve_points", "after_improve_points", "capacity_points", "keep_up_points", "room_points", "weeks_central"]) opt(c[k], num, `${r}.${k}`);
         opt(c.capacity_basis, str, r + ".capacity_basis");
         opt(c.start, when, r + ".start");
         need(Array.isArray(c.subjects) && Array.isArray(c.keep_up_items), r);
