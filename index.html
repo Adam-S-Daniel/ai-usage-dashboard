@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'sha256-OZLxWmAncK3HH0bcDfSppvo2KWqiJ8IPctpLDvZFddw='; connect-src https://api.github.com https://gist.githubusercontent.com; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'sha256-q2LSTm2Rl8yZr/lxdpRXKkFOMJ/lqjypsfeaZz9wVi4='; connect-src https://api.github.com https://gist.githubusercontent.com; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'">
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-title" content="AI Usage">
@@ -62,6 +62,9 @@ details.calc summary{cursor:pointer;color:var(--ink);font-weight:500}
 details.calc ol{margin:8px 0 0;padding-left:20px}
 details.calc li{margin:6px 0;line-height:1.45}
 details.calc b{color:var(--ink);font-weight:600;font-variant-numeric:tabular-nums}
+.seg{display:flex;gap:6px;flex-wrap:wrap;align-items:center;margin:8px 0 2px;font-size:13px;color:var(--ink2)}
+.seg button{font-size:13px;padding:4px 10px;min-height:32px}
+.seg button[aria-pressed="true"]{background:var(--used);border-color:var(--used);color:#fff}
 </style>
 </head>
 <body>
@@ -285,16 +288,36 @@ function calcSteps(c) {
     <li>Catch-up: ${weeks}</li></ol></details>`;
 }
 
-function loopForecast(f, error) {
+// The forecast's basis window (skills-evals evals/forecast.yml): the days of past data its rates average. The collector
+// precomputes each window it offers (`by_window`), so the choice is made here and remembered on this device.
+let basisPick = null;
+const BASIS = /^[0-9]{1,3}$/;
+function savedBasis() { try { const v = localStorage.getItem("basis"); return BASIS.test(v) ? v : null; } catch { return null; } }
+function basisChoice(f) {
+  const wins = f.by_window ? Object.keys(f.by_window) : [], pick = basisPick ?? savedBasis();
+  const key = pick != null && wins.includes(pick) ? pick : String(f.basis_window_days);
+  return { wins, key, shown: hasOwn(f.by_window || {}, key) ? f.by_window[key] : f };
+}
+function basisNote(f, wins, key, shown) {
+  if (shown.basis_window_days == null) return "";
+  const days = shown.basis_window_days, meter = shown.basis_meter_days;
+  const short = meter != null && meter < days - 0.5 ? ` (the meter history covers ${f1(meter)} of them)` : "";
+  const buttons = wins.length > 1 ? wins.map((w) => `<button data-basis="${esc(w)}" aria-pressed="${w === key}">${esc(w)} days${String(f.basis_window_days) === w ? " (default)" : ""}</button>`).join("") : "";
+  return (buttons ? `<div class="seg" role="group" aria-label="Basis window">Basis ${buttons}</div>` : "") +
+    `<div class="sub">Rates average the last ${esc(days)} days of data${short}.</div>`;
+}
+
+function loopForecast(f0, error) {
   let body = "";
-  if (f) {
+  if (f0) {
+    const { wins, key, shown: f } = basisChoice(f0);
     const c = f.catch_up_date || {};
     const catchUp = c.central == null ? "Not at current capacity"
       : `${esc(localDay(c.central))}` + (c.fast != null && c.slow != null ? ` (${esc(localDay(c.fast))} to ${esc(localDay(c.slow))})` : "");
     const rows = (f.tasks || []).map((t) => `<tr><td>${esc(t.task)}</td><td>${f1(t.points_per_week)}</td></tr>`).join("");
     const tasks = rows ? `<div class="scroll"><table><tr><th>Task</th><th>Points per week</th></tr>${rows}</table></div>`
       : `<div class="sub">Per-task points: see the project dashboard's routines table.</div>`;
-    body = `<div class="row"><span>Catch-up</span><span class="big">${catchUp}</span></div>
+    body = `${basisNote(f0, wins, key, f)}<div class="row"><span>Catch-up</span><span class="big">${catchUp}</span></div>
       <div class="sub">Keep-up ≈${f1(f.keep_up_points_per_week)} points/week · eval capacity ≈${f1(f.capacity_points_per_week)} points/week · non-eval use ≈${f1(f.non_eval_points_per_week)} points/week · open subjects ${esc(f.open_subjects)}</div>
       ${replayNote(f.pace_replay)}${calcSteps(f.calculation)}${tasks}<div class="sub">Forecast as of ${esc(localTime(f.as_of))}</div>`;
   }
@@ -364,6 +387,13 @@ function render() {
 }
 
 document.addEventListener("click", (e) => {
+  const b = e.target.dataset && e.target.dataset.basis;
+  if (b && BASIS.test(b)) {
+    basisPick = b;
+    try { localStorage.setItem("basis", b); } catch {}
+    render();
+    return;
+  }
   const d = e.target.dataset && e.target.dataset.d;
   if (!d) return;
   const v = (platformCard.days || {})[d] || [];
@@ -512,9 +542,10 @@ function validateUsage(doc) {
       for (const f of ["eval_committed_points", "estimated_points", "eval_estimated_points", "improve_estimated_points", "loop_jobs_so_far_points"]) nn(st.loop[f], "loop." + f);
       if (st.loop.estimated_points != null) for (const f of ["eval_estimated_points", "improve_estimated_points", "loop_jobs_so_far_points"]) n(st.loop[f], "loop." + f);
     }
-    if (st.forecast != null) {
-      const f = st.forecast;
+    const forecast = (f, q) => {
       need(obj(f) && when(f.as_of), q + ".forecast");
+      opt(f.basis_window_days, (v) => num(v) && v >= 1, q + ".forecast.basis_window_days");
+      opt(f.basis_meter_days, num, q + ".forecast.basis_meter_days");
       for (const k of ["keep_up_points_per_week", "capacity_points_per_week", "non_eval_points_per_week"]) n(f[k], "forecast." + k);
       need(num(f.open_subjects) && f.open_subjects >= 0, q + ".forecast.open_subjects");
       if (f.catch_up_date != null) { need(obj(f.catch_up_date), q + ".forecast.catch_up_date"); for (const k of ["central", "fast", "slow"]) opt(f.catch_up_date[k], when, `${q}.forecast.catch_up_date.${k}`); }
@@ -536,6 +567,18 @@ function validateUsage(doc) {
         opt(r.half_spent_by_hours, num, q + ".forecast.pace_replay.half_spent_by_hours");
       }
       list(f.tasks, q + ".forecast.tasks", 50, (t, r) => { need(str(t.task), r + ".task"); need(num(t.points_per_week), r + ".points_per_week"); });
+    };
+    if (st.forecast != null) {
+      forecast(st.forecast, q);
+      const w = st.forecast.by_window;
+      if (w != null) {
+        need(obj(w) && Object.keys(w).length <= 8, q + ".forecast.by_window");
+        for (const k of Object.keys(w)) {
+          need(BASIS.test(k), q + ".forecast.by_window");
+          forecast(w[k], `${q}.forecast.by_window.${k}`);
+          need(w[k].by_window == null && w[k].basis_window_days === Number(k), `${q}.forecast.by_window.${k}.basis_window_days`);
+        }
+      }
     }
     opt(st.forecast_error, errText, q + ".forecast_error");
   });
@@ -568,7 +611,7 @@ function demo() {
       pace: { source: "live", used_pct: 76, at: iso(-12e4), elapsed_pct: 56, line_pct: 44.8, stop_pct: 80, ahead: true, under_line_points: -31.2 },
       guard_pace: { source: "guard", used_pct: 74, at: iso(-4.5 * H), elapsed_pct: 56, line_pct: 44.8, stop_pct: 80, ahead: true, under_line_points: -29.2 },
       loop: { eval_spent_points: 13.3, eval_pending_points: 0, eval_committed_points: 13.3, loop_jobs_points: 8.9, used_points: 22.2, cap_points: 25, eval_cap_points: 16.1, room_points: 0, eval_runs: 89, fires: 89 },
-      forecast: { as_of: iso(-30 * 6e4), open_subjects: 21, backlog_points: 26, catch_up_weeks: { central: 5.1, fast: 1.5, slow: null },
+      forecast: { as_of: iso(-30 * 6e4), basis_window_days: 28, basis_meter_days: 24, open_subjects: 21, backlog_points: 26, catch_up_weeks: { central: 5.1, fast: 1.5, slow: null },
         catch_up_date: { central: iso(857 * H), fast: iso(252 * H), slow: null }, keep_up_points_per_week: 1.2, capacity_points_per_week: 6.3,
         eval_cap_points_per_week: 16.1, loop_jobs_points_per_week: 8.9, non_eval_points_per_week: 60, pace_hold_modeled: true,
         pace_replay: { weeks: 2, low_points: 4.5, high_points: 8, flat_points: 0, half_spent_by_hours: 16 },
