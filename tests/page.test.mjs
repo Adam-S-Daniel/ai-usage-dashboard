@@ -785,7 +785,7 @@ test("loop-a: the sample renders verdict, pace, 5-hour stop, spend, reset, forec
   assert.match(app, /Guard's reading: 74% at /);
   assert.match(app, /Off: the ultra plan has no 5-hour window/);
   assert.match(app, /Loop share booked<\/span><span class="big">≈22\.2%/);
-  assert.match(app, /The guard books ≈22\.2% against the 25% share \(evals 13\.3 incl\. 0\.0 pending, scheduled jobs' whole week 8\.9\): a safety margin on every run, never more than the account meter, so room ≈0\.0%\./);
+  assert.match(app, /The guard books ≈22\.2% against the 25% share \(eval and improve runs 13\.3 incl\. 0\.0 pending, scheduled jobs' whole week 8\.9\): a safety margin on every run, never more than the account meter, so room ≈0\.0%\./);
   assert.doesNotMatch(app, /Loop spend</);
   assert.match(app, /Project threads are not counted\./);
   assert.match(app, /Next weekly reset[\s\S]*in 2 d 22 h/);
@@ -806,7 +806,7 @@ test("loop-spend: the estimate leads, below the account total, with the guard's 
   const app = await loopApp(loopDoc(st));
   assert.match(app, /Loop spend<\/span><span class="big">≈8\.8%<\/span>/);
   assert.match(app, /≈8\.8% of the week used since the weekly reset, of the loop's 25% share \(eval runs 4\.3, improve runs 3\.6, scheduled jobs so far 0\.9\); the whole account has used 13%\./);
-  assert.match(app, /The guard books ≈17\.6% against the 25% share \(evals 13\.0 incl\. 0\.0 pending, scheduled jobs' whole week 4\.6\)/);
+  assert.match(app, /The guard books ≈17\.6% against the 25% share \(eval and improve runs 13\.0 incl\. 0\.0 pending, scheduled jobs' whole week 4\.6\)/);
   assert.match(app, /style="width:35\.36%"/);
   const bad = loopStatus(); bad.loop.estimated_points = 5;
   assert.match(await loopApp(loopDoc(bad)), /malformed: sources\.loop\.status\.loop\.eval_estimated_points/);

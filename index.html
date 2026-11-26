@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'sha256-KySiv+vftpK7eD1iDMUg8R7W//B08zKGT3vz29QVQ9Q='; connect-src https://api.github.com https://gist.githubusercontent.com; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'sha256-+a7jz4qnpvwgTcKh63E4H+k16dePUmZJlczdWaOwBoY='; connect-src https://api.github.com https://gist.githubusercontent.com; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'">
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-title" content="AI Usage">
@@ -231,11 +231,12 @@ function loopPace(p, gp, now) {
 // Two figures (Adam, 2026-11-24: "Loop spend is shown as higher than all usage"). The estimate is what the loop has
 // used: its runs' own calls priced from tokens, improve runs, and the scheduled jobs for the share of the week gone.
 // The guard's booked figure is a safe upper bound, not spend: a margin on every run, never above the account reading
-// (which holds all your use), plus the jobs' whole week up front. Both are % of the weekly allowance.
+// (which holds all your use), plus the jobs' whole week up front. Both are % of the weekly allowance. The guard's
+// spent holds improve runs as well as evals (allowance_guard.account), so its label names both (Adam, 2026-11-26).
 function loopSpend(l, pace) {
   const est = l.estimated_points, booked = l.used_points, cap = l.cap_points;
   const acct = pace ? `; the whole account has used ${g1(pace.used_pct)}%` : "";
-  const guardLine = `<div class="sub">The guard books ≈${f1(booked)}% against the ${g1(cap)}% share (evals ${f1(l.eval_committed_points ?? l.eval_spent_points)} incl. ${f1(l.eval_pending_points)} pending, scheduled jobs' whole week ${f1(l.loop_jobs_points)}): a safety margin on every run, never more than the account meter, so room ≈${f1(l.room_points)}%.</div>`;
+  const guardLine = `<div class="sub">The guard books ≈${f1(booked)}% against the ${g1(cap)}% share (eval and improve runs ${f1(l.eval_committed_points ?? l.eval_spent_points)} incl. ${f1(l.eval_pending_points)} pending, scheduled jobs' whole week ${f1(l.loop_jobs_points)}): a safety margin on every run, never more than the account meter, so room ≈${f1(l.room_points)}%.</div>`;
   if (est == null) {
     const pct = cap > 0 ? clampPct((booked / cap) * 100) : booked > 0 ? 100 : 0;
     return `<div class="meter"><div class="row"><span>Loop share booked</span><span class="big">≈${f1(booked)}%</span></div>
