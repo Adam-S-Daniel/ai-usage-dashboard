@@ -900,6 +900,26 @@ test("loop-basis-real: a real loop_status forecast with every window validates a
   assert.deepEqual(Object.keys(real.by_window), ["14", "28", "56"]);
 });
 
+test("loop-fit: the forecast says how its weekly averages fit the loop spend, and takes improve runs off the cap", async () => {
+  const real = JSON.parse(fs.readFileSync(new URL("./fixtures/loop-forecast-by-window.json", import.meta.url), "utf8"));
+  const st = loopStatus();
+  st.forecast = real;
+  const app = await loopApp(loopDoc(st));
+  assert.doesNotMatch(app, /malformed/);
+  assert.match(app, /How these fit together: the loop spend above is this week so far; the forecast's figures are weekly averages over the basis window, so a week can run above them\./);
+  assert.match(app, /Non-eval use is everything on the meter except eval runs: your own threads and sessions plus the loop's scheduled jobs and improve runs\./);
+  assert.match(app, new RegExp(`eval capacity is what is left of it for evals \\(scheduled jobs ≈${real.loop_jobs_points_per_week.toFixed(1)}, improve runs ≈${real.improve_points_per_week.toFixed(1)} a week\\)`));
+  const c = real.calculation;
+  assert.match(app, new RegExp(` − improve runs <b>${c.improve_points.toFixed(1)}</b> = <b>${c.after_improve_points.toFixed(1)}</b>`));
+  // A status without the improve figures shows neither the step nor the numbers.
+  const plain = await loopApp(loopDoc());
+  assert.match(plain, /eval capacity is what is left of it for evals \(scheduled jobs ≈8\.9 a week\)/);
+  assert.doesNotMatch(plain, /improve runs ≈|− improve runs/);
+  st.forecast = { ...structuredClone(real), improve_points_per_week: "7" };
+  delete st.forecast.by_window;
+  assert.match(await loopApp(loopDoc(st)), /malformed: sources\.loop\.status\.forecast\.improve_points_per_week/);
+});
+
 test("loop-basis-bad: a malformed window is rejected", async () => {
   const st = loopStatus();
   st.forecast = { ...st.forecast, basis_window_days: 28, by_window: { 28: { ...structuredClone(st.forecast), basis_window_days: 14 } } };
