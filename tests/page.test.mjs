@@ -855,6 +855,45 @@ test("loop-g: the pace-hold replay behind the eval capacity is explained, and a 
   assert.doesNotMatch(await loopApp(loopDoc()), /replays the pace hold/);
 });
 
+test("loop-basis: the forecast names its basis window, switches between precomputed windows and remembers the choice", async () => {
+  const st = loopStatus();
+  const win = (days, keep, cap) => ({ ...structuredClone(st.forecast), basis_window_days: days, basis_meter_days: Math.min(days, 24), keep_up_points_per_week: keep, capacity_points_per_week: cap });
+  st.forecast = { ...win(28, 9.7, 4.2), by_window: { 14: win(14, 9, 3.7), 28: win(28, 9.7, 4.2), 56: win(56, 9.7, 4.1) } };
+  const p = await boot({ hash: "#" + A, gists: { [A]: loopDoc(st) } });
+  let app = p.app();
+  assert.match(app, /<button data-basis="14" aria-pressed="false">14 days<\/button><button data-basis="28" aria-pressed="true">28 days \(default\)<\/button><button data-basis="56" aria-pressed="false">56 days<\/button>/);
+  assert.match(app, /Rates average the last 28 days of data \(the meter history covers 24\.0 of them\)\./);
+  assert.match(app, /Keep-up ≈9\.7 points\/week · eval capacity ≈4\.2 points\/week/);
+  p.ctx.listeners["doc:click"]({ target: { dataset: { basis: "14" } } });
+  app = p.app();
+  assert.match(app, /data-basis="14" aria-pressed="true"/);
+  assert.match(app, /Rates average the last 14 days of data\.<\/div>/);
+  assert.match(app, /Keep-up ≈9\.0 points\/week · eval capacity ≈3\.7 points\/week/);
+  assert.equal(p.store.get("basis"), "14");
+  // A remembered choice the document does not offer, or a hostile one, falls back to the default.
+  for (const saved of ["7", "<b>14</b>"]) {
+    const q = await boot({ hash: "#" + A, saved: { basis: saved }, gists: { [A]: loopDoc(st) } });
+    assert.match(q.app(), /data-basis="28" aria-pressed="true"/);
+  }
+  const r = await boot({ hash: "#" + A, saved: { basis: "56" }, gists: { [A]: loopDoc(st) } });
+  assert.match(r.app(), /Rates average the last 56 days of data \(the meter history covers 24\.0 of them\)/);
+  // A status from before the basis window shows no selector and no basis line.
+  assert.doesNotMatch(await loopApp(loopDoc()), /data-basis|Rates average/);
+});
+
+test("loop-basis-bad: a malformed window is rejected", async () => {
+  const st = loopStatus();
+  st.forecast = { ...st.forecast, basis_window_days: 28, by_window: { 28: { ...structuredClone(st.forecast), basis_window_days: 14 } } };
+  assert.match(await loopApp(loopDoc(st)), /malformed: sources\.loop\.status\.forecast\.by_window\.28\.basis_window_days/);
+  st.forecast.by_window = { "<b>": structuredClone(st.forecast.by_window[28]) };
+  assert.match(await loopApp(loopDoc(st)), /malformed: sources\.loop\.status\.forecast\.by_window/);
+  st.forecast.by_window = { 28: { ...structuredClone(loopStatus().forecast), basis_window_days: 28, keep_up_points_per_week: "9" } };
+  assert.match(await loopApp(loopDoc(st)), /malformed/);
+  st.forecast.by_window = undefined;
+  st.forecast.basis_window_days = "28";
+  assert.match(await loopApp(loopDoc(st)), /malformed: sources\.loop\.status\.forecast\.basis_window_days/);
+});
+
 test("loop-h: the catch-up calculation is shown step by step, escaped, and a bad one is rejected", async () => {
   const st = loopStatus();
   st.forecast.calculation = { subjects: [{ kind: "skill", subject: "<b>s</b>", route: "keep", open_cells: 1, pairs: 4, points: 1.25 }], subjects_total: 3,
