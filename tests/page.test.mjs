@@ -807,7 +807,12 @@ test("loop-spend: the estimate leads, below the account total, with the guard's 
   assert.match(app, /Loop spend<\/span><span class="big">≈8\.8%<\/span>/);
   assert.match(app, /≈8\.8% of the week used since the weekly reset, of the loop's 25% share \(eval runs 4\.3, improve runs 3\.6, scheduled jobs so far 0\.9\); the whole account has used 13%\./);
   assert.match(app, /The guard books ≈17\.6% against the 25% share \(eval and improve runs 13\.0 incl\. 0\.0 pending, scheduled jobs' whole week 4\.6\)/);
-  assert.match(app, /style="width:35\.36%"/);
+  // The share drawn as one stacked bar, scaled to the 25-point share: evals, improve runs, scheduled jobs so far.
+  assert.match(app, /<div class="bar stack" role="img" aria-label="Loop spend this week so far: evals 4\.3, improve runs 3\.6, scheduled jobs 0\.9, 8\.8 of the 25-point share">/);
+  assert.match(app, /flex:0 0 calc\(17\.16% - 2px\);background:var\(--s1\)" title="Evals 4\.3"/);
+  assert.match(app, /flex:0 0 calc\(14\.52% - 2px\);background:var\(--s2\)" title="Improve runs 3\.6"/);
+  assert.match(app, /flex:0 0 calc\(3\.68% - 2px\);background:var\(--s3\)" title="Scheduled jobs 0\.9"/);
+  assert.match(app, /Scheduled jobs 0\.9<\/span><span class="tot">Total 8\.8 of 25<\/span>/);
   const bad = loopStatus(); bad.loop.estimated_points = 5;
   assert.match(await loopApp(loopDoc(bad)), /malformed: sources\.loop\.status\.loop\.eval_estimated_points/);
 });
@@ -918,6 +923,32 @@ test("loop-fit: the forecast says how its weekly averages fit the loop spend, an
   st.forecast = { ...structuredClone(real), improve_points_per_week: "7" };
   delete st.forecast.by_window;
   assert.match(await loopApp(loopDoc(st)), /malformed: sources\.loop\.status\.forecast\.improve_points_per_week/);
+});
+
+test("loop-breakdown: the forecast splits the loop's weekly spend and draws it like the loop spend bar", async () => {
+  // Adam, 2026-11-27: add improve runs, scheduled jobs and the loop's overall spend beside eval capacity, drawn the
+  // same way as the loop spend above so the two compare at a glance.
+  const real = JSON.parse(fs.readFileSync(new URL("./fixtures/loop-forecast-by-window.json", import.meta.url), "utf8"));
+  const st = loopStatus();
+  st.forecast = real;
+  Object.assign(st.loop, { estimated_points: 8.84, eval_estimated_points: 4.29, improve_estimated_points: 3.63, loop_jobs_so_far_points: 0.92 });
+  const app = await loopApp(loopDoc(st));
+  const [e, i, j] = [real.capacity_points_per_week, real.improve_points_per_week, real.loop_jobs_points_per_week];
+  const t = (e + i + j).toFixed(1);
+  assert.match(app, new RegExp(`eval capacity ≈${e.toFixed(1)} points/week · improve runs ≈${i.toFixed(1)} · scheduled jobs ≈${j.toFixed(1)} · loop spend ≈${t} points/week · non-eval use`));
+  assert.match(app, new RegExp(`Loop spend, a typical week</span><span class="big">≈${t}%`));
+  assert.match(app, new RegExp(`aria-label="Forecast loop spend a week: evals ${e.toFixed(1)}, improve runs ${i.toFixed(1)}, scheduled jobs ${j.toFixed(1)}, ${t} of the 25-point share"`));
+  // Both bars carry the same three-part key, so they read side by side.
+  assert.equal((app.match(/<div class="bar stack"/g) || []).length, 2);
+  // Past the share, the bar rescales and marks the share with the stop tick.
+  const over = loopStatus();
+  Object.assign(over.loop, { eval_estimated_points: 20, improve_estimated_points: 8, loop_jobs_so_far_points: 2, estimated_points: 30 });
+  const big = await loopApp(loopDoc(over));
+  assert.match(big, /Total 30\.0 of 25<\/span>/);
+  assert.match(big, /<div class="tick stop" style="left:calc\(83\.3\d*% - 1px\)"><\/div><\/div>\s*<div class="key"><span><span class="sw" style="background:var\(--s1\)">/);
+  // A forecast without the improve figure draws no forecast bar and adds no breakdown.
+  const plain = await loopApp(loopDoc());
+  assert.doesNotMatch(plain, /Loop spend, a typical week|· loop spend ≈/);
 });
 
 test("loop-basis-bad: a malformed window is rejected", async () => {
