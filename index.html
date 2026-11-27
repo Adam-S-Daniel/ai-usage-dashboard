@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'sha256-+a7jz4qnpvwgTcKh63E4H+k16dePUmZJlczdWaOwBoY='; connect-src https://api.github.com https://gist.githubusercontent.com; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'sha256-/IKoFTamkBHoYAPjJvnjn1CNkbjTsoTxKIHfS7MSfZU='; connect-src https://api.github.com https://gist.githubusercontent.com; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'">
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-title" content="AI Usage">
@@ -56,6 +56,11 @@ code{font-size:13px;word-break:break-all}
 .other{margin-top:14px;border-top:1px solid var(--grid);padding-top:8px}
 .other .bar{height:8px}
 .tick.stop{background:var(--crit)}
+.stack{display:flex;gap:2px}
+.stack .part{height:100%;min-width:2px}
+.stack+.key{margin-top:6px;gap:4px 14px}
+.key .tot{margin-left:auto;color:var(--ink);font-variant-numeric:tabular-nums}
+.stack .part:first-child{border-radius:4px 0 0 4px}
 .sec{margin-top:14px;border-top:1px solid var(--grid);padding-top:8px}
 details.calc{margin-top:10px;font-size:13px;color:var(--ink2)}
 details.calc summary{cursor:pointer;color:var(--ink);font-weight:500}
@@ -233,6 +238,22 @@ function loopPace(p, gp, now) {
 // The guard's booked figure is a safe upper bound, not spend: a margin on every run, never above the account reading
 // (which holds all your use), plus the jobs' whole week up front. Both are % of the weekly allowance. The guard's
 // spent holds improve runs as well as evals (allowance_guard.account), so its label names both (Adam, 2026-11-26).
+// The loop's share split into its three parts, one stacked bar drawn the same way in Loop spend (this week so far) and
+// the Forecast (weekly averages), both scaled to the share so the two read side by side (Adam, 2026-11-27). Colors
+// follow the part, never its size: evals series 1, improve runs 2, scheduled jobs 3 (the three slots that validate all-pairs).
+const LOOP_PARTS = [["Evals", "var(--s1)"], ["Improve runs", "var(--s2)"], ["Scheduled jobs", "var(--s3)"]];
+function shareBar(values, cap, what) {
+  const total = values.reduce((a, v) => a + v, 0), scale = Math.max(cap, total);
+  if (!(scale > 0)) return "";
+  const parts = values.map((v, i) => [LOOP_PARTS[i][0], LOOP_PARTS[i][1], v]).filter((x) => x[2] > 0);
+  const segs = parts.map(([n, c, v]) => `<div class="part" style="flex:0 0 calc(${+clampPct((v / scale) * 100).toFixed(3)}% - 2px);background:${c}" title="${n} ${f1(v)}"></div>`).join("");
+  const label = parts.map(([n, , v]) => `${n.toLowerCase()} ${f1(v)}`).join(", ");
+  const stop = total > cap ? `<div class="tick stop" style="left:calc(${+clampPct((cap / scale) * 100).toFixed(3)}% - 1px)"></div>` : "";
+  const key = LOOP_PARTS.map(([n, c], i) => `<span><span class="sw" style="background:${c}"></span>${n} ${f1(values[i])}</span>`).join("");
+  return `<div class="bar stack" role="img" aria-label="${esc(what)}: ${label}, ${f1(total)} of the ${g1(cap)}-point share">${segs}${stop}</div>
+    <div class="key">${key}<span class="tot">Total ${f1(total)} of ${g1(cap)}</span></div>`;
+}
+
 function loopSpend(l, pace) {
   const est = l.estimated_points, booked = l.used_points, cap = l.cap_points;
   const acct = pace ? `; the whole account has used ${g1(pace.used_pct)}%` : "";
@@ -243,9 +264,8 @@ function loopSpend(l, pace) {
     <div class="bar" role="img" aria-label="Approximately ${f1(booked)}% of the week booked of the loop's ${g1(cap)}% share"><div class="fill" style="width:${pct}%"></div></div>
     ${guardLine}<div class="sub">% of the weekly allowance. Project threads are not counted.</div></div>`;
   }
-  const pct = cap > 0 ? clampPct((est / cap) * 100) : est > 0 ? 100 : 0;
   return `<div class="meter"><div class="row"><span>Loop spend</span><span class="big">≈${f1(est)}%</span></div>
-    <div class="bar" role="img" aria-label="Approximately ${f1(est)}% of the week used by the loop, of its ${g1(cap)}% share"><div class="fill" style="width:${pct}%"></div></div>
+    ${shareBar([l.eval_estimated_points, l.improve_estimated_points, l.loop_jobs_so_far_points], cap, "Loop spend this week so far")}
     <div class="sub">≈${f1(est)}% of the week used since the weekly reset, of the loop's ${g1(cap)}% share (eval runs ${f1(l.eval_estimated_points)}, improve runs ${f1(l.improve_estimated_points)}, scheduled jobs so far ${f1(l.loop_jobs_so_far_points)})${acct}.</div>
     ${guardLine}<div class="sub">% of the weekly allowance, estimated from token counts. Project threads are not counted.</div></div>`;
 }
@@ -321,6 +341,20 @@ function fitNote(f) {
   return `<div class="sub">How these fit together: the loop spend above is this week so far; the forecast's figures are weekly averages over the basis window, so a week can run above them. Non-eval use is everything on the meter except eval runs: your own threads and sessions plus the loop's scheduled jobs and improve runs. The loop's share holds evals, improve runs and scheduled jobs; eval capacity is what is left of it for evals${loop}, and the pace hold can leave them less.</div>`;
 }
 
+// The forecast's weekly loop spend: eval capacity plus the improve runs and scheduled jobs that share the cap.
+function loopParts(f) {
+  const v = [f.capacity_points_per_week, f.improve_points_per_week, f.loop_jobs_points_per_week];
+  return v.every((x) => typeof x === "number" && Number.isFinite(x)) ? v : null;
+}
+function loopWeek(f) {
+  const v = loopParts(f);
+  return v ? ` · improve runs ≈${f1(v[1])} · scheduled jobs ≈${f1(v[2])} · loop spend ≈${f1(v[0] + v[1] + v[2])} points/week` : "";
+}
+function forecastBar(f) {
+  const v = loopParts(f), cap = f.calculation?.weekly_cap_points;
+  return v && typeof cap === "number" && cap > 0 ? `<div class="meter"><div class="row"><span>Loop spend, a typical week</span><span class="big">≈${f1(v[0] + v[1] + v[2])}%</span></div>${shareBar(v, cap, "Forecast loop spend a week")}</div>` : "";
+}
+
 function loopForecast(f0, error) {
   let body = "";
   if (f0) {
@@ -332,7 +366,8 @@ function loopForecast(f0, error) {
     const tasks = rows ? `<div class="scroll"><table><tr><th>Task</th><th>Points per week</th></tr>${rows}</table></div>`
       : `<div class="sub">Per-task points: see the project dashboard's routines table.</div>`;
     body = `${basisNote(f0, wins, key, f)}<div class="row"><span>Catch-up</span><span class="big">${catchUp}</span></div>
-      <div class="sub">Keep-up ≈${f1(f.keep_up_points_per_week)} points/week · eval capacity ≈${f1(f.capacity_points_per_week)} points/week · non-eval use ≈${f1(f.non_eval_points_per_week)} points/week · open subjects ${esc(f.open_subjects)}</div>
+      <div class="sub">Keep-up ≈${f1(f.keep_up_points_per_week)} points/week · eval capacity ≈${f1(f.capacity_points_per_week)} points/week${loopWeek(f)} · non-eval use ≈${f1(f.non_eval_points_per_week)} points/week · open subjects ${esc(f.open_subjects)}</div>
+      ${forecastBar(f)}
       ${fitNote(f)}${replayNote(f.pace_replay)}${calcSteps(f.calculation)}${tasks}<div class="sub">Forecast as of ${esc(localTime(f.as_of))}</div>`;
   }
   const e = error ? `<div class="sub warn">▲ Forecast: ${esc(error)}</div>` : "";
